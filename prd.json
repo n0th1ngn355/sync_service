@@ -1,0 +1,793 @@
+{
+  "product_name": "ArXiv Superconductor Papers Sync Service",
+  "product_overview": "Единый сервис для автоматической и ручной загрузки научных статей по сверхпроводимости (cond-mat.supr-con) из arXiv, их обработки (PDF → текст → структурированные данные) и хранения в формате, готовом для RAG-системы. Построен на FastAPI + APScheduler по шаблону backend_arch.",
+  "features": [
+    {
+      "feature_id": "F001",
+      "general_info": {
+        "name": "Автоматическая синхронизация статей из arXiv",
+        "overview": "Полный инкрементальный пайплайн: сбор метаданных через OAI-PMH → определение tar-архивов через manifest → скачивание PDF из S3 arXiv → конвертация PDF в текст → извлечение структурированных данных (material, Tc, type, dimensionality). Запускается по расписанию. Каждый шаг проверяет статус статьи и не обрабатывает повторно."
+      },
+      "goal_and_context": {
+        "business_goal": "Поддерживать актуальную базу статей по сверхпроводимости для RAG-системы помощника исследователя. Метрика — полнота покрытия новых публикаций (время от публикации на arXiv до появления в базе).",
+        "user_problem": "Инженеры-материаловеды не могут быстро находить релевантные исследования по новым сверхпроводящим материалам. Ручной мониторинг arXiv занимает много времени и пропускает статьи."
+      },
+      "actors_and_roles": {
+        "primary_user": "Система (APScheduler)",
+        "secondary_user": "Администратор (мониторинг через API)",
+        "system_service": "arXiv OAI-PMH, arXiv S3, PostgreSQL, файловое хранилище"
+      },
+      "business_rules": [
+        {
+          "rule_id": "BR001",
+          "description": "В базу попадают только статьи, у которых в списке категорий присутствует cond-mat.supr-con."
+        },
+        {
+          "rule_id": "BR002",
+          "description": "Статьи, содержащие на первой странице ключевые слова прикладной сверхпроводимости (qubit, josephson, transmon, fluxon, squid, majorana, diode, duality, ads-cft), отфильтровываются и не попадают в финальную базу."
+        },
+        {
+          "rule_id": "BR003",
+          "description": "Статьи, в тексте которых упоминается давление в единицах GPa, kbar или bar, отфильтровываются (высокобарная тематика)."
+        },
+        {
+          "rule_id": "BR004",
+          "description": "При повторной синхронизации OAI-PMH запрашиваются только записи новее последнего успешного datestamp минус overlap_days (по умолчанию 2 дня) для страховки."
+        },
+        {
+          "rule_id": "BR005",
+          "description": "Статья не обрабатывается повторно, если её текущий статус — DONE или COMPLETED. Повторная обработка возможна только при явном сбросе статуса."
+        },
+        {
+          "rule_id": "BR006",
+          "description": "Если статья уже существует в базе (совпадение по source + external_id), при синхронизации из arXiv запись не перезаписывается (ON CONFLICT DO NOTHING)."
+        },
+        {
+          "rule_id": "BR007",
+          "description": "Ошибка обработки одной статьи не останавливает пайплайн. Статья получает статус ERROR с описанием ошибки, обработка остальных продолжается."
+        },
+        {
+          "rule_id": "BR008",
+          "description": "Из каждой статьи извлекается payload: chemical material formulas (с контекстной валидацией — формула должна встречаться рядом со словами superconduct, Tc, pairing и т.д.), максимальная критическая температура Tc в Кельвинах, тип статьи (experiment/theory/hybrid), размерность (2D/Bulk), признак нетрадиционной сверхпроводимости, дебаевская частота."
+        },
+        {
+          "rule_id": "BR009",
+          "description": "Полный текст статьи сохраняется в отдельной таблице paper_content. Исходный PDF и промежуточный TXT сохраняются в файловом хранилище, пути записываются в таблицу paper_file."
+        }
+      ],
+      "acceptance_criteria": [
+        {
+          "scenario_id": "SC001",
+          "user_story": "Как система, я хочу автоматически загружать новые статьи из arXiv по расписанию, чтобы база была актуальной.",
+          "bdd": {
+            "given": "Сервис запущен, расписание активно, в arXiv появились новые статьи cond-mat.supr-con",
+            "and_preconditions": [
+              "PostgreSQL доступен",
+              "arXiv OAI-PMH доступен",
+              "В таблице scheduler_config есть активная запись с job_name='arxiv_sync_pipeline'"
+            ],
+            "when": "Наступает время по расписанию (cron_expression из scheduler_config)",
+            "then": "Пайплайн запускается: новые статьи загружены в таблицу paper со статусом NEW",
+            "and_postconditions": [
+              "sync_state.last_success_datestamp обновлён",
+              "sync_state.last_status = 'OK'",
+              "Количество новых записей залогировано"
+            ]
+          }
+        },
+        {
+          "scenario_id": "SC002",
+          "user_story": "Как система, я хочу скачивать PDF новых статей и конвертировать их в текст, чтобы контент был доступен для RAG.",
+          "bdd": {
+            "given": "В таблице paper есть записи со статусом NEW",
+            "and_preconditions": [
+              "Таблица pdf_tar_manifest заполнена актуальным манифестом",
+              "arXiv S3 доступен",
+              "Файловое хранилище доступно"
+            ],
+            "when": "Пайплайн переходит к этапу скачивания и обработки",
+            "then": "PDF скачан, текст извлечён и сохранён в paper_content, payload заполнен в paper.payload, статус статьи — DONE",
+            "and_postconditions": [
+              "Пути к PDF и TXT записаны в paper_file",
+              "Статьи, не прошедшие фильтры BR002/BR003, получают статус FILTERED"
+            ]
+          }
+        },
+        {
+          "scenario_id": "SC003",
+          "user_story": "Как система, я хочу корректно обрабатывать ошибки при синхронизации, чтобы не терять прогресс.",
+          "bdd": {
+            "given": "Пайплайн запущен, одна из статей вызывает ошибку при обработке",
+            "and_preconditions": [],
+            "when": "Происходит ошибка (битый PDF, недоступный tar и т.д.)",
+            "then": "Статья получает статус ERROR с описанием ошибки в last_error, остальные статьи продолжают обрабатываться",
+            "and_postconditions": [
+              "Поле attempts увеличено на 1",
+              "Ошибка залогирована"
+            ]
+          }
+        },
+        {
+          "scenario_id": "SC004",
+          "user_story": "Как система, я не хочу обрабатывать статью повторно, если она уже обработана.",
+          "bdd": {
+            "given": "В таблице paper есть статья со статусом DONE",
+            "and_preconditions": [],
+            "when": "Запускается очередной цикл пайплайна",
+            "then": "Статья пропускается, её данные не изменяются",
+            "and_postconditions": []
+          }
+        }
+      ],
+      "non_functional_requirements": [
+        {
+          "nfr_id": "NFR001",
+          "type": "Performance",
+          "description": "Пайплайн обрабатывает не менее 100 новых статей за один запуск (скачивание + конвертация + извлечение payload)."
+        },
+        {
+          "nfr_id": "NFR002",
+          "type": "Availability",
+          "description": "При недоступности arXiv OAI-PMH или S3 пайплайн завершается с ошибкой и логирует причину, не нарушая работу API-эндпоинтов сервиса."
+        },
+        {
+          "nfr_id": "NFR003",
+          "type": "Scalability",
+          "description": "Архитектура БД (таблицы paper, paper_content, paper_file, paper_source_meta) не привязана к arXiv и допускает добавление новых источников без миграций схемы."
+        }
+      ],
+      "test_cases": [
+        {
+          "test_id": "T001",
+          "scenario_id": "SC001",
+          "setup": "БД пустая, OAI-PMH мок возвращает 5 записей cond-mat.supr-con",
+          "action": "Запуск шага sync_metadata пайплайна",
+          "assertion": "В таблице paper 5 записей со статусом NEW, source='arxiv'",
+          "examples": [
+            {
+              "input": {"oai_records_count": 5, "suprcon_count": 3, "other_count": 2},
+              "expected": {"papers_in_db": 3, "status": "NEW"}
+            }
+          ]
+        },
+        {
+          "test_id": "T002",
+          "scenario_id": "SC002",
+          "setup": "В paper есть запись со статусом NEW, PDF доступен",
+          "action": "Запуск шагов download + process пайплайна",
+          "assertion": "Статус DONE, paper_content заполнен, payload содержит извлечённые данные",
+          "examples": [
+            {
+              "input": {"arxiv_id": "2311.05538", "has_pdf": true},
+              "expected": {"status": "DONE", "has_full_text": true, "payload_keys": ["material", "tc_K", "type", "dimensionality"]}
+            }
+          ]
+        },
+        {
+          "test_id": "T003",
+          "scenario_id": "SC003",
+          "setup": "В paper 3 записи NEW, одна с битым PDF",
+          "action": "Запуск пайплайна",
+          "assertion": "2 статьи DONE, 1 статья ERROR с last_error",
+          "examples": [
+            {
+              "input": {"total_new": 3, "broken_pdf_count": 1},
+              "expected": {"done_count": 2, "error_count": 1}
+            }
+          ]
+        },
+        {
+          "test_id": "T004",
+          "scenario_id": "SC004",
+          "setup": "В paper есть запись со статусом DONE",
+          "action": "Повторный запуск пайплайна",
+          "assertion": "Запись не изменена, updated_at не обновлён",
+          "examples": [
+            {
+              "input": {"existing_status": "DONE"},
+              "expected": {"status_after": "DONE", "was_processed": false}
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "feature_id": "F002",
+      "general_info": {
+        "name": "Управление расписанием синхронизации",
+        "overview": "API для просмотра, изменения, приостановки и ручного запуска расписания пайплайна. Расписание хранится в БД (дефолт из .env), поддерживает cron-выражения и пресеты (hourly/daily/weekly)."
+      },
+      "goal_and_context": {
+        "business_goal": "Дать администратору контроль над частотой синхронизации без перезапуска сервиса. Возможность оперативно запустить синхронизацию вручную при необходимости.",
+        "user_problem": "Администратор хочет менять расписание синхронизации без редактирования конфигов и перезапуска сервиса."
+      },
+      "actors_and_roles": {
+        "primary_user": "Администратор",
+        "secondary_user": null,
+        "system_service": "APScheduler, PostgreSQL"
+      },
+      "business_rules": [
+        {
+          "rule_id": "BR010",
+          "description": "При старте сервис читает расписание из .env как дефолт. Если в таблице scheduler_config уже есть сохранённое расписание — используется оно."
+        },
+        {
+          "rule_id": "BR011",
+          "description": "Расписание задаётся в формате cron-выражения (5 полей: минута, час, день месяца, месяц, день недели) или пресетом (hourly, daily, weekly)."
+        },
+        {
+          "rule_id": "BR012",
+          "description": "При изменении расписания через API APScheduler перестраивает джоб на лету, перезапуск сервиса не требуется."
+        },
+        {
+          "rule_id": "BR013",
+          "description": "Ручной запуск (POST /run) создаёт немедленное выполнение пайплайна вне расписания. Если пайплайн уже выполняется, запрос возвращает ошибку 409 Conflict."
+        },
+        {
+          "rule_id": "BR014",
+          "description": "Пауза (POST /pause) останавливает автоматические запуски, но не прерывает текущий выполняющийся пайплайн. Возобновление (POST /resume) восстанавливает расписание."
+        }
+      ],
+      "acceptance_criteria": [
+        {
+          "scenario_id": "SC005",
+          "user_story": "Как администратор, я хочу видеть текущее расписание и статус последней синхронизации.",
+          "bdd": {
+            "given": "Сервис запущен, расписание настроено",
+            "and_preconditions": [],
+            "when": "GET /api/v1/scheduler/status",
+            "then": "Возвращается JSON с cron_expression, is_active, last_run_at, last_status, next_run_at",
+            "and_postconditions": []
+          }
+        },
+        {
+          "scenario_id": "SC006",
+          "user_story": "Как администратор, я хочу изменить расписание синхронизации.",
+          "bdd": {
+            "given": "Сервис запущен, текущее расписание — ежечасно",
+            "and_preconditions": [],
+            "when": "PUT /api/v1/scheduler/schedule с телом {\"cron_expression\": \"0 3 * * *\"}",
+            "then": "Расписание обновлено в БД, APScheduler перестроен, следующий запуск — в 03:00",
+            "and_postconditions": [
+              "scheduler_config.updated_at обновлён"
+            ]
+          }
+        },
+        {
+          "scenario_id": "SC007",
+          "user_story": "Как администратор, я хочу запустить синхронизацию вручную прямо сейчас.",
+          "bdd": {
+            "given": "Сервис запущен, пайплайн не выполняется",
+            "and_preconditions": [],
+            "when": "POST /api/v1/scheduler/run",
+            "then": "Пайплайн запускается немедленно, возвращается 202 Accepted с идентификатором запуска",
+            "and_postconditions": [
+              "scheduler_config.last_run_at обновлён",
+              "scheduler_config.last_status = 'RUNNING'"
+            ]
+          }
+        },
+        {
+          "scenario_id": "SC008",
+          "user_story": "Как администратор, я хочу получить ошибку при попытке запустить пайплайн, который уже выполняется.",
+          "bdd": {
+            "given": "Пайплайн уже выполняется",
+            "and_preconditions": [],
+            "when": "POST /api/v1/scheduler/run",
+            "then": "Возвращается 409 Conflict с сообщением 'Pipeline is already running'",
+            "and_postconditions": []
+          }
+        },
+        {
+          "scenario_id": "SC009",
+          "user_story": "Как администратор, я хочу приостановить и возобновить автоматическую синхронизацию.",
+          "bdd": {
+            "given": "Расписание активно",
+            "and_preconditions": [],
+            "when": "POST /api/v1/scheduler/pause",
+            "then": "is_active = false, автоматические запуски остановлены",
+            "and_postconditions": [
+              "POST /api/v1/scheduler/resume возвращает is_active = true, расписание восстановлено"
+            ]
+          }
+        }
+      ],
+      "non_functional_requirements": [
+        {
+          "nfr_id": "NFR004",
+          "type": "Availability",
+          "description": "Изменение расписания применяется без перезапуска сервиса (hot reload APScheduler job)."
+        },
+        {
+          "nfr_id": "NFR005",
+          "type": "Performance",
+          "description": "Эндпоинты управления расписанием отвечают менее чем за 500 мс."
+        }
+      ],
+      "test_cases": [
+        {
+          "test_id": "T005",
+          "scenario_id": "SC005",
+          "setup": "Сервис запущен, в scheduler_config есть запись",
+          "action": "GET /api/v1/scheduler/status",
+          "assertion": "200 OK, тело содержит cron_expression, is_active, last_run_at, last_status",
+          "examples": [
+            {
+              "input": {},
+              "expected": {"status_code": 200, "has_fields": ["cron_expression", "is_active", "last_run_at", "last_status", "next_run_at"]}
+            }
+          ]
+        },
+        {
+          "test_id": "T006",
+          "scenario_id": "SC006",
+          "setup": "Текущее расписание '0 * * * *' (ежечасно)",
+          "action": "PUT /api/v1/scheduler/schedule с {\"cron_expression\": \"0 3 * * *\"}",
+          "assertion": "200 OK, cron_expression = '0 3 * * *'",
+          "examples": [
+            {
+              "input": {"cron_expression": "0 3 * * *"},
+              "expected": {"status_code": 200, "cron_expression": "0 3 * * *"}
+            },
+            {
+              "input": {"preset": "weekly"},
+              "expected": {"status_code": 200, "cron_expression": "0 3 * * 1"}
+            },
+            {
+              "input": {"cron_expression": "invalid"},
+              "expected": {"status_code": 422}
+            }
+          ]
+        },
+        {
+          "test_id": "T007",
+          "scenario_id": "SC008",
+          "setup": "Пайплайн уже выполняется (last_status = RUNNING)",
+          "action": "POST /api/v1/scheduler/run",
+          "assertion": "409 Conflict",
+          "examples": [
+            {
+              "input": {"pipeline_running": true},
+              "expected": {"status_code": 409}
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "feature_id": "F003",
+      "general_info": {
+        "name": "Просмотр статей",
+        "overview": "API для просмотра списка статей с фильтрацией, пагинацией, получения детальной информации включая полный текст, и агрегированной статистики по базе."
+      },
+      "goal_and_context": {
+        "business_goal": "Предоставить доступ к содержимому базы для будущей RAG-системы и для ручного контроля качества данных.",
+        "user_problem": "Инженер-материаловед хочет искать статьи по конкретным материалам, диапазону Tc, типу исследования, а также видеть общую картину по базе."
+      },
+      "actors_and_roles": {
+        "primary_user": "Инженер-материаловед",
+        "secondary_user": "Администратор (контроль качества)",
+        "system_service": "PostgreSQL"
+      },
+      "business_rules": [
+        {
+          "rule_id": "BR015",
+          "description": "Список статей возвращается с пагинацией: обязательные параметры offset (default 0) и limit (default 50, max 200)."
+        },
+        {
+          "rule_id": "BR016",
+          "description": "Доступные фильтры для списка: source (arxiv/manual/...), status (NEW/DONE/ERROR/...), material (подстрока в JSONB payload.material), tc_K_min и tc_K_max (диапазон), type (experiment/theory/hybrid), dimensionality (2D/Bulk)."
+        },
+        {
+          "rule_id": "BR017",
+          "description": "Детальная информация о статье включает все поля из paper, payload, и данные из paper_source_meta."
+        },
+        {
+          "rule_id": "BR018",
+          "description": "Полный текст статьи возвращается отдельным эндпоинтом GET /papers/{id}/content, чтобы не нагружать основной запрос."
+        },
+        {
+          "rule_id": "BR019",
+          "description": "Статистика включает: общее количество статей, разбивку по source, разбивку по status, разбивку по type, Top-10 материалов по количеству статей."
+        }
+      ],
+      "acceptance_criteria": [
+        {
+          "scenario_id": "SC010",
+          "user_story": "Как инженер-материаловед, я хочу получить список статей с фильтрами и пагинацией.",
+          "bdd": {
+            "given": "В базе есть статьи с разными source, material, tc_K, type",
+            "and_preconditions": [],
+            "when": "GET /api/v1/papers?source=arxiv&tc_K_min=30&type=experiment&offset=0&limit=20",
+            "then": "Возвращается JSON со списком статей, соответствующих фильтрам, с полями id, external_id, source, title, authors, categories, payload, status, published_at",
+            "and_postconditions": [
+              "В ответе есть поле total с общим количеством записей по фильтру"
+            ]
+          }
+        },
+        {
+          "scenario_id": "SC011",
+          "user_story": "Как инженер-материаловед, я хочу получить полную информацию о конкретной статье.",
+          "bdd": {
+            "given": "В базе есть статья с id=42",
+            "and_preconditions": [],
+            "when": "GET /api/v1/papers/42",
+            "then": "Возвращается полная информация: все поля paper, payload, source_meta",
+            "and_postconditions": []
+          }
+        },
+        {
+          "scenario_id": "SC012",
+          "user_story": "Как инженер-материаловед, я хочу получить полный текст статьи.",
+          "bdd": {
+            "given": "В базе есть статья с id=42 со статусом DONE",
+            "and_preconditions": [
+              "В paper_content есть запись для этой статьи"
+            ],
+            "when": "GET /api/v1/papers/42/content",
+            "then": "Возвращается полный текст статьи в поле full_text",
+            "and_postconditions": []
+          }
+        },
+        {
+          "scenario_id": "SC013",
+          "user_story": "Как инженер-материаловед, я хочу видеть статистику по базе.",
+          "bdd": {
+            "given": "В базе есть статьи",
+            "and_preconditions": [],
+            "when": "GET /api/v1/papers/stats",
+            "then": "Возвращается JSON со total_count, by_source, by_status, by_type, top_materials",
+            "and_postconditions": []
+          }
+        },
+        {
+          "scenario_id": "SC014",
+          "user_story": "Как пользователь, я получаю 404, если статья не найдена.",
+          "bdd": {
+            "given": "В базе нет статьи с id=99999",
+            "and_preconditions": [],
+            "when": "GET /api/v1/papers/99999",
+            "then": "Возвращается 404 Not Found",
+            "and_postconditions": []
+          }
+        }
+      ],
+      "non_functional_requirements": [
+        {
+          "nfr_id": "NFR006",
+          "type": "Performance",
+          "description": "Список статей с фильтрами и пагинацией возвращается менее чем за 1 секунду при базе до 50 000 записей."
+        },
+        {
+          "nfr_id": "NFR007",
+          "type": "Performance",
+          "description": "Статистика возвращается менее чем за 2 секунды. При необходимости может быть кэширована."
+        }
+      ],
+      "test_cases": [
+        {
+          "test_id": "T008",
+          "scenario_id": "SC010",
+          "setup": "В базе 100 статей: 60 arxiv + 40 manual, разные type и tc_K",
+          "action": "GET /api/v1/papers?source=arxiv&type=experiment&offset=0&limit=10",
+          "assertion": "Возвращаются только arxiv + experiment статьи, не более 10, total содержит полное количество",
+          "examples": [
+            {
+              "input": {"source": "arxiv", "type": "experiment", "limit": 10},
+              "expected": {"status_code": 200, "items_count_lte": 10, "all_source": "arxiv", "all_type": "experiment"}
+            },
+            {
+              "input": {"tc_K_min": 30, "tc_K_max": 100},
+              "expected": {"status_code": 200, "all_tc_K_in_range": true}
+            }
+          ]
+        },
+        {
+          "test_id": "T009",
+          "scenario_id": "SC012",
+          "setup": "Статья id=1 со статусом DONE и полным текстом в paper_content",
+          "action": "GET /api/v1/papers/1/content",
+          "assertion": "200 OK, full_text не пустой",
+          "examples": [
+            {
+              "input": {"paper_id": 1, "has_content": true},
+              "expected": {"status_code": 200, "full_text_not_empty": true}
+            },
+            {
+              "input": {"paper_id": 1, "has_content": false},
+              "expected": {"status_code": 404}
+            }
+          ]
+        },
+        {
+          "test_id": "T010",
+          "scenario_id": "SC013",
+          "setup": "В базе статьи из разных источников, с разными статусами",
+          "action": "GET /api/v1/papers/stats",
+          "assertion": "200 OK, все агрегации присутствуют",
+          "examples": [
+            {
+              "input": {},
+              "expected": {"status_code": 200, "has_fields": ["total_count", "by_source", "by_status", "by_type", "top_materials"]}
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "feature_id": "F004",
+      "general_info": {
+        "name": "Ручное добавление статей",
+        "overview": "API для добавления статей из произвольных источников. Поддерживает загрузку PDF с автоматической обработкой через тот же пайплайн (pdf2text → text2json). Архитектура БД не привязана к arXiv и поддерживает любые источники через поле source."
+      },
+      "goal_and_context": {
+        "business_goal": "Расширить базу знаний RAG-системы за пределы arXiv. Дать возможность добавлять статьи из журналов, внутренних отчётов, других репозиториев.",
+        "user_problem": "У исследователя есть релевантная статья не из arXiv (журнальная публикация, препринт коллеги, внутренний отчёт), и он хочет включить её в базу для поиска."
+      },
+      "actors_and_roles": {
+        "primary_user": "Инженер-материаловед",
+        "secondary_user": "Администратор",
+        "system_service": "PostgreSQL, файловое хранилище, пайплайн обработки PDF"
+      },
+      "business_rules": [
+        {
+          "rule_id": "BR020",
+          "description": "При ручном добавлении обязательные поля: title, source. Опциональные: authors, abstract, categories, external_id, PDF-файл."
+        },
+        {
+          "rule_id": "BR021",
+          "description": "Если приложен PDF-файл, он сохраняется в файловое хранилище и ставится в очередь на обработку: pdf2text → text2json. После обработки заполняются paper_content и payload."
+        },
+        {
+          "rule_id": "BR022",
+          "description": "Если PDF не приложен, статья создаётся с пустым paper_content и дефолтным payload. Статус — DONE (без PDF нечего обрабатывать)."
+        },
+        {
+          "rule_id": "BR023",
+          "description": "Дедупликация: если в базе уже есть запись с таким же source + external_id, возвращается 409 Conflict. Если external_id не указан — дедупликация не выполняется."
+        },
+        {
+          "rule_id": "BR024",
+          "description": "Фильтры BR002 и BR003 (ключевые слова, давление) к ручным статьям не применяются — пользователь явно решил добавить статью."
+        },
+        {
+          "rule_id": "BR025",
+          "description": "Для ручных статей source_meta может содержать произвольный JSON (doi, journal, notes и т.д.)."
+        }
+      ],
+      "acceptance_criteria": [
+        {
+          "scenario_id": "SC015",
+          "user_story": "Как инженер-материаловед, я хочу добавить статью вручную с PDF для автоматической обработки.",
+          "bdd": {
+            "given": "Пользователь имеет PDF-файл статьи",
+            "and_preconditions": [],
+            "when": "POST /api/v1/papers (multipart: metadata JSON + PDF file)",
+            "then": "Статья создана со статусом PROCESSING, PDF сохранён, запущена обработка",
+            "and_postconditions": [
+              "После обработки: статус DONE, paper_content заполнен, payload заполнен",
+              "В paper_file записан путь к PDF и TXT"
+            ]
+          }
+        },
+        {
+          "scenario_id": "SC016",
+          "user_story": "Как инженер-материаловед, я хочу добавить статью вручную без PDF (только метаданные).",
+          "bdd": {
+            "given": "Пользователь знает метаданные статьи, но не имеет PDF",
+            "and_preconditions": [],
+            "when": "POST /api/v1/papers с JSON {\"title\": \"...\", \"source\": \"manual\", \"authors\": \"...\"}",
+            "then": "Статья создана со статусом DONE, payload пустой (дефолтный)",
+            "and_postconditions": []
+          }
+        },
+        {
+          "scenario_id": "SC017",
+          "user_story": "Как система, я хочу предотвратить добавление дубликатов.",
+          "bdd": {
+            "given": "В базе есть статья с source='scopus' и external_id='10.1038/s41586-023'",
+            "and_preconditions": [],
+            "when": "POST /api/v1/papers с тем же source и external_id",
+            "then": "Возвращается 409 Conflict с сообщением 'Paper already exists'",
+            "and_postconditions": [
+              "Существующая запись не изменена"
+            ]
+          }
+        },
+        {
+          "scenario_id": "SC018",
+          "user_story": "Как система, я хочу вернуть ошибку при отсутствии обязательных полей.",
+          "bdd": {
+            "given": "Пользователь отправляет запрос без обязательных полей",
+            "and_preconditions": [],
+            "when": "POST /api/v1/papers с телом без title",
+            "then": "Возвращается 422 Unprocessable Entity",
+            "and_postconditions": []
+          }
+        }
+      ],
+      "non_functional_requirements": [
+        {
+          "nfr_id": "NFR008",
+          "type": "Performance",
+          "description": "Загрузка PDF до 50 МБ должна приниматься без таймаута. Обработка PDF выполняется асинхронно, эндпоинт возвращает ответ немедленно."
+        },
+        {
+          "nfr_id": "NFR009",
+          "type": "Security",
+          "description": "Загружаемый файл валидируется: проверяется MIME-type (application/pdf), размер (не более 50 МБ)."
+        }
+      ],
+      "test_cases": [
+        {
+          "test_id": "T011",
+          "scenario_id": "SC015",
+          "setup": "БД пустая, файловое хранилище доступно",
+          "action": "POST /api/v1/papers multipart: metadata + test.pdf",
+          "assertion": "201 Created, статья создана, PDF сохранён",
+          "examples": [
+            {
+              "input": {"title": "Test Paper", "source": "manual", "has_pdf": true},
+              "expected": {"status_code": 201, "initial_status": "PROCESSING"}
+            }
+          ]
+        },
+        {
+          "test_id": "T012",
+          "scenario_id": "SC016",
+          "setup": "БД пустая",
+          "action": "POST /api/v1/papers JSON без PDF",
+          "assertion": "201 Created, статус DONE, payload дефолтный",
+          "examples": [
+            {
+              "input": {"title": "Manual Paper", "source": "manual", "authors": "Author A"},
+              "expected": {"status_code": 201, "status": "DONE", "payload_empty": true}
+            }
+          ]
+        },
+        {
+          "test_id": "T013",
+          "scenario_id": "SC017",
+          "setup": "В базе есть запись source='scopus', external_id='10.1038/test'",
+          "action": "POST /api/v1/papers с тем же source и external_id",
+          "assertion": "409 Conflict",
+          "examples": [
+            {
+              "input": {"source": "scopus", "external_id": "10.1038/test", "title": "Duplicate"},
+              "expected": {"status_code": 409}
+            }
+          ]
+        },
+        {
+          "test_id": "T014",
+          "scenario_id": "SC018",
+          "setup": "БД пустая",
+          "action": "POST /api/v1/papers без title",
+          "assertion": "422 Unprocessable Entity",
+          "examples": [
+            {
+              "input": {"source": "manual"},
+              "expected": {"status_code": 422}
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "feature_id": "F005",
+      "general_info": {
+        "name": "Health Check",
+        "overview": "Расширенная проверка состояния сервиса: доступность БД, доступность файлового хранилища, статус последней синхронизации. Совместимость с Kubernetes liveness/readiness probes."
+      },
+      "goal_and_context": {
+        "business_goal": "Обеспечить мониторинг и быструю диагностику проблем сервиса.",
+        "user_problem": "Администратор хочет быстро понять, работает ли сервис корректно, и если нет — какой компонент вышел из строя."
+      },
+      "actors_and_roles": {
+        "primary_user": "Администратор / система мониторинга",
+        "secondary_user": null,
+        "system_service": "PostgreSQL, файловое хранилище"
+      },
+      "business_rules": [
+        {
+          "rule_id": "BR026",
+          "description": "GET /health возвращает полный статус: database (connected/disconnected), storage (available/unavailable), last_sync (статус, время, количество статей), версия сервиса."
+        },
+        {
+          "rule_id": "BR027",
+          "description": "GET /health/live возвращает 200, если процесс жив (для Kubernetes liveness probe). Не проверяет зависимости."
+        },
+        {
+          "rule_id": "BR028",
+          "description": "GET /health/ready возвращает 200, если БД доступна и хранилище доступно (для Kubernetes readiness probe). Если любая зависимость недоступна — 503."
+        }
+      ],
+      "acceptance_criteria": [
+        {
+          "scenario_id": "SC019",
+          "user_story": "Как администратор, я хочу получить полный статус сервиса.",
+          "bdd": {
+            "given": "Сервис запущен",
+            "and_preconditions": [],
+            "when": "GET /health",
+            "then": "Возвращается JSON с database, storage, last_sync, version",
+            "and_postconditions": []
+          }
+        },
+        {
+          "scenario_id": "SC020",
+          "user_story": "Как Kubernetes, я хочу проверить, что сервис жив.",
+          "bdd": {
+            "given": "Сервис запущен",
+            "and_preconditions": [],
+            "when": "GET /health/live",
+            "then": "200 OK",
+            "and_postconditions": []
+          }
+        },
+        {
+          "scenario_id": "SC021",
+          "user_story": "Как Kubernetes, я хочу проверить, что сервис готов принимать запросы.",
+          "bdd": {
+            "given": "Сервис запущен, БД доступна, хранилище доступно",
+            "and_preconditions": [],
+            "when": "GET /health/ready",
+            "then": "200 OK",
+            "and_postconditions": []
+          }
+        },
+        {
+          "scenario_id": "SC022",
+          "user_story": "Как Kubernetes, я хочу получить 503, если БД недоступна.",
+          "bdd": {
+            "given": "Сервис запущен, БД недоступна",
+            "and_preconditions": [],
+            "when": "GET /health/ready",
+            "then": "503 Service Unavailable с указанием, что database disconnected",
+            "and_postconditions": []
+          }
+        }
+      ],
+      "non_functional_requirements": [
+        {
+          "nfr_id": "NFR010",
+          "type": "Performance",
+          "description": "Health-эндпоинты отвечают менее чем за 500 мс."
+        },
+        {
+          "nfr_id": "NFR011",
+          "type": "Availability",
+          "description": "GET /health/live доступен всегда, пока процесс жив, независимо от состояния зависимостей."
+        }
+      ],
+      "test_cases": [
+        {
+          "test_id": "T015",
+          "scenario_id": "SC019",
+          "setup": "Сервис запущен, БД и хранилище доступны",
+          "action": "GET /health",
+          "assertion": "200 OK, все компоненты healthy",
+          "examples": [
+            {
+              "input": {"db_available": true, "storage_available": true},
+              "expected": {"status_code": 200, "database": "connected", "storage": "available"}
+            }
+          ]
+        },
+        {
+          "test_id": "T016",
+          "scenario_id": "SC022",
+          "setup": "Сервис запущен, БД недоступна",
+          "action": "GET /health/ready",
+          "assertion": "503 Service Unavailable",
+          "examples": [
+            {
+              "input": {"db_available": false},
+              "expected": {"status_code": 503, "database": "disconnected"}
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
