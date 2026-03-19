@@ -1,14 +1,16 @@
 """
-Service — бизнес-логика приложения.
+Service layer exports.
 
-Экспортирует все сервисы для удобного импорта:
-    from service import HealthService
+## Traceability
+Infrastructure.
 """
 
 from .health.health_service import HealthService
+from .paper.paper_service import PaperService
 from .user.user_service import UserService
 
 __all__ = [
     "HealthService",
+    "PaperService",
     "UserService",
 ]

@@ -1,14 +1,16 @@
 """
-Repository — слой доступа к данным.
+Repository layer exports.
 
-Экспортирует все репозитории для удобного импорта:
-    from repository import BaseRepository
+## Traceability
+Infrastructure.
 """
 
 from .base_repository import BaseRepository
+from .paper.paper_repository import PaperRepository
 from .user.user_repository import UserRepository
 
 __all__ = [
     "BaseRepository",
+    "PaperRepository",
     "UserRepository",
 ]

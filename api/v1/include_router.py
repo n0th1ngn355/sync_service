@@ -1,18 +1,16 @@
 """
-Include Router — подключение всех роутеров API v1.
+Include API routers.
 
-## Бизнес-контекст
-Централизованное подключение всех ресурсных роутеров
-к основному приложению FastAPI.
+## Traceability
+Infrastructure.
 """
 
 from core import app
-from .endpoints import health_router, users_router
+from .endpoints import health_router, papers_router, users_router
 
-# Health check — без версии в пути (стандарт для k8s/docker)
 app.include_router(health_router)
 
-# API v1 endpoints
 API_V1_PREFIX = "/api/v1"
 
 app.include_router(users_router, prefix=API_V1_PREFIX)
+app.include_router(papers_router, prefix=API_V1_PREFIX)

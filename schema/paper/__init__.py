@@ -1,12 +1,6 @@
-"""
-Schema package exports.
+"""Paper schema exports."""
 
-## Traceability
-Infrastructure.
-"""
-
-from .health.health_schema import HealthCheckResponseSchema, LastSyncSchema
-from .paper.paper_schema import (
+from .paper_schema import (
     PaperContentResponseSchema,
     PaperDetailResponseSchema,
     PaperListItemSchema,
@@ -15,11 +9,8 @@ from .paper.paper_schema import (
     StatsBucketSchema,
     TopMaterialSchema,
 )
-from .user.user_schema import UserCreateSchema, UserGetOrCreateResponseSchema, UserResponseSchema
 
 __all__ = [
-    "HealthCheckResponseSchema",
-    "LastSyncSchema",
     "PaperListItemSchema",
     "PaperListResponseSchema",
     "PaperDetailResponseSchema",
@@ -27,7 +18,4 @@ __all__ = [
     "StatsBucketSchema",
     "TopMaterialSchema",
     "PaperStatsResponseSchema",
-    "UserCreateSchema",
-    "UserResponseSchema",
-    "UserGetOrCreateResponseSchema",
 ]
