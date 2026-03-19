@@ -33,6 +33,13 @@ class ValidationError(AppException):
         super().__init__(message=message, code="VALIDATION_ERROR")
 
 
+class ConflictError(AppException):
+    """Data conflict error."""
+
+    def __init__(self, message: str = "Conflict"):
+        super().__init__(message=message, code="CONFLICT")
+
+
 class ExternalServiceError(AppException):
     """Ошибка внешнего сервиса."""
 

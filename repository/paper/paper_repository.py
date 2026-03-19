@@ -2,8 +2,8 @@
 Paper repository.
 
 ## Traceability
-Feature: F003
-Scenarios: SC010, SC011, SC012, SC013, SC014
+Feature: F003, F004
+Scenarios: SC010, SC011, SC012, SC013, SC014, SC015, SC016, SC017, SC018
 """
 
 from collections import Counter
@@ -13,6 +13,7 @@ from sqlalchemy import Float, String, cast, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from model.paper.paper_content_model import PaperContentModel
+from model.paper.paper_file_model import PaperFileModel
 from model.paper.paper_model import PaperModel
 from model.paper.paper_source_meta_model import PaperSourceMetaModel
 
@@ -20,6 +21,78 @@ from model.paper.paper_source_meta_model import PaperSourceMetaModel
 class PaperRepository:
     def __init__(self):
         self.model = PaperModel
+
+    async def get_by_source_external_id(
+        self,
+        session: AsyncSession,
+        source: str,
+        external_id: str,
+    ) -> PaperModel | None:
+        stmt = select(self.model).where(
+            self.model.source == source,
+            self.model.external_id == external_id,
+        )
+        return (await session.execute(stmt)).scalar_one_or_none()
+
+    async def create_paper(self, session: AsyncSession, **kwargs) -> PaperModel:
+        paper = self.model(**kwargs)
+        session.add(paper)
+        await session.flush()
+        await session.refresh(paper)
+        return paper
+
+    async def create_paper_content(
+        self,
+        session: AsyncSession,
+        *,
+        paper_id: int,
+        full_text: str,
+    ) -> PaperContentModel:
+        content = PaperContentModel(paper_id=paper_id, full_text=full_text)
+        session.add(content)
+        await session.flush()
+        await session.refresh(content)
+        return content
+
+    async def create_paper_file(
+        self,
+        session: AsyncSession,
+        *,
+        paper_id: int,
+        file_type: str,
+        storage_path: str,
+        mime_type: str | None,
+        size_bytes: int | None,
+        checksum: str | None,
+    ) -> PaperFileModel:
+        paper_file = PaperFileModel(
+            paper_id=paper_id,
+            file_type=file_type,
+            storage_path=storage_path,
+            mime_type=mime_type,
+            size_bytes=size_bytes,
+            checksum=checksum,
+        )
+        session.add(paper_file)
+        await session.flush()
+        await session.refresh(paper_file)
+        return paper_file
+
+    async def create_paper_source_meta(
+        self,
+        session: AsyncSession,
+        *,
+        paper_id: int,
+        source_meta: dict[str, Any],
+    ) -> PaperSourceMetaModel:
+        source_meta_model = PaperSourceMetaModel(
+            paper_id=paper_id,
+            source_meta=source_meta,
+        )
+        session.add(source_meta_model)
+        await session.flush()
+        await session.refresh(source_meta_model)
+        return source_meta_model
 
     def _apply_filters(
         self,

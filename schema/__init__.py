@@ -7,6 +7,8 @@ Infrastructure.
 
 from .health.health_schema import HealthCheckResponseSchema, LastSyncSchema
 from .paper.paper_schema import (
+    PaperCreateResponseSchema,
+    PaperCreateSchema,
     PaperContentResponseSchema,
     PaperDetailResponseSchema,
     PaperListItemSchema,
@@ -20,6 +22,8 @@ from .user.user_schema import UserCreateSchema, UserGetOrCreateResponseSchema, U
 __all__ = [
     "HealthCheckResponseSchema",
     "LastSyncSchema",
+    "PaperCreateSchema",
+    "PaperCreateResponseSchema",
     "PaperListItemSchema",
     "PaperListResponseSchema",
     "PaperDetailResponseSchema",

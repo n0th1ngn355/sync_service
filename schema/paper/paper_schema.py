@@ -2,14 +2,35 @@
 Paper schemas.
 
 ## Traceability
-Feature: F003
-Scenarios: SC010, SC011, SC012, SC013, SC014
+Feature: F003, F004
+Scenarios: SC010, SC011, SC012, SC013, SC014, SC015, SC016, SC017, SC018
 """
 
 from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel, Field
+
+
+class PaperCreateSchema(BaseModel):
+    title: str = Field(..., min_length=1)
+    source: str = Field(..., min_length=1)
+
+    authors: str | None = None
+    abstract: str | None = None
+    categories: str | None = None
+    external_id: str | None = None
+    source_meta: dict[str, Any] = Field(default_factory=dict)
+
+
+class PaperCreateResponseSchema(BaseModel):
+    id: int
+    source: str
+    external_id: str | None = None
+    title: str
+    status: str
+    payload: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
 
 
 class PaperListItemSchema(BaseModel):

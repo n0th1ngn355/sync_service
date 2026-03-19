@@ -28,6 +28,7 @@ async def app_exception_handler(request: Request, exc: AppException) -> JSONResp
     status_codes = {
         "NOT_FOUND": 404,
         "VALIDATION_ERROR": 400,
+        "CONFLICT": 409,
         "LIMIT_EXCEEDED": 429,
         "EXTERNAL_SERVICE_ERROR": 502,
     }

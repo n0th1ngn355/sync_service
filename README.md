@@ -1,189 +1,187 @@
-# Service Template
+﻿# Sync Service (Superconductivity Papers)
 
-Шаблон для быстрого создания новых микросервисов на FastAPI.
+Сервис для синхронизации и хранения научных статей по сверхпроводимости.
 
-## Быстрый старт
+Текущий статус реализации:
+- F003: чтение статей (`GET /api/v1/papers`, детали, контент, статистика)
+- F004: ручное добавление статей (`POST /api/v1/papers`, JSON и multipart)
+- F005: health-check (`/health`, `/health/live`, `/health/ready`)
 
-### 1. Скопировать шаблон
+## 1. Требования
 
-```bash
-cp -r service_template my_new_service
-cd my_new_service
-```
+- Python 3.11+
+- Docker (рекомендуется для PostgreSQL)
+- PowerShell (команды ниже даны для Windows)
 
-### 2. Настроить переменные окружения
+## 2. Быстрый старт
 
-```bash
-cp .env.example .env
-# Отредактировать .env
-```
+### 2.1. Виртуальное окружение и зависимости
 
-### 3. Установить зависимости
-
-```bash
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
 pip install -r requirements.txt
+pip install pytest pytest-asyncio
 ```
 
-### 4. Запустить
+### 2.2. Поднять PostgreSQL в Docker
 
-```bash
+```powershell
+docker run --name sync-postgres `
+  -e POSTGRES_USER=postgres `
+  -e POSTGRES_PASSWORD=postgres `
+  -e POSTGRES_DB=sync_service `
+  -p 5432:5432 -d postgres:16
+```
+
+Если порт `5432` занят, используй `-p 5433:5432` и выстави `DB_PORT=5433` в `.env`.
+
+### 2.3. Настроить `.env`
+
+Минимальный пример:
+
+```env
+MODE_DEBUG=True
+SERVICE_NAME=ArXiv Superconductor Papers Sync Service
+SERVICE_VERSION=0.1.0
+
+STORAGE_PATH=storage
+
+DB_ENGINE=postgresql
+DB_HOST=localhost
+DB_PORT=5432
+DB_NAME=sync_service
+DB_USER=postgres
+DB_PASSWORD=postgres
+```
+
+### 2.4. Применить миграции
+
+```powershell
+python -m alembic upgrade head
+python -m alembic current
+```
+
+### 2.5. Запустить сервис
+
+```powershell
 python main.py
 ```
 
-Сервис будет доступен на http://localhost:8000
+Swagger:
+- `http://localhost:8000/docs`
 
-### 5. Проверить
+## 3. Ручная проверка API
 
-```bash
+### 3.1. Health-check
+
+```powershell
 curl http://localhost:8000/health
+curl http://localhost:8000/health/live
+curl http://localhost:8000/health/ready
 ```
 
-## Структура проекта
+### 3.2. Проверка чтения статей (F003)
 
-```
-service_template/
-├── main.py                    # Точка входа
-├── requirements.txt           # Зависимости
-│
-├── core/                     # Ядро приложения
-│   ├── __init__.py
-│   ├── config.py            # Конфигурация
-│   ├── database.py          # Подключение к БД
-│   ├── loader.py            # Инициализация FastAPI
-│   └── exceptions.py        # Базовые исключения
-│
-├── model/                    # ORM модели
-│   ├── __init__.py
-│   ├── base_model.py
-│   └── enums.py
-│
-├── schema/                   # Pydantic схемы
-│   ├── __init__.py
-│   └── health/
-│       └── health_schema.py
-│
-├── repository/               # Слой доступа к данным
-│   ├── __init__.py
-│   └── base_repository.py
-│
-├── service/                  # Бизнес-логика
-│   ├── __init__.py
-│   └── health/
-│       └── health_service.py
-│
-└── api/                      # HTTP API
-    ├── __init__.py
-    └── v1/
-        ├── include_router.py
-        ├── exception_handlers.py
-        └── endpoints/
-            └── health/
-                ├── __init__.py
-                └── get.py
+```powershell
+curl "http://localhost:8000/api/v1/papers?offset=0&limit=10"
+curl http://localhost:8000/api/v1/papers/stats
 ```
 
-## Endpoints
+### 3.3. Добавить статью без PDF (F004)
 
-| Метод | URL | Описание |
-|-------|-----|----------|
-| GET | `/health` | Полная проверка состояния |
-| GET | `/health/live` | Liveness probe (k8s) |
-| GET | `/health/ready` | Readiness probe (k8s) |
-
-## Добавление новой сущности
-
-### 1. Создать модель
-
-```python
-# model/example/example_model.py
-
-from sqlalchemy import Column, String
-from model.base_model import Base, BaseModel
-
-class ExampleModel(Base, BaseModel):
-    __tablename__ = "examples"
-    name = Column(String(255), nullable=False)
+```powershell
+curl -X POST http://localhost:8000/api/v1/papers `
+  -H "Content-Type: application/json" `
+  -d '{"title":"Manual Paper","source":"manual","authors":"Author A"}'
 ```
 
-### 2. Создать схему
+Ожидание:
+- HTTP `201`
+- `status = "DONE"`
 
-```python
-# schema/example/example_schema.py
+### 3.4. Добавить статью с PDF (F004)
 
-from pydantic import BaseModel
-
-class ExampleCreateSchema(BaseModel):
-    name: str
-
-class ExampleResponseSchema(BaseModel):
-    id: int
-    name: str
-    
-    class Config:
-        from_attributes = True
+```powershell
+curl -X POST http://localhost:8000/api/v1/papers `
+  -F "metadata={\"title\":\"Test Paper\",\"source\":\"manual\"}" `
+  -F "file=@C:/tmp/test.pdf;type=application/pdf"
 ```
 
-### 3. Создать репозиторий
+Ожидание:
+- HTTP `201`
+- `status = "PROCESSING"`
+- PDF сохраняется в `STORAGE_PATH/papers/<paper_id>/...`
 
-```python
-# repository/example/example_repository.py
+Важно:
+- В текущей реализации запуск фоновой обработки PDF после загрузки отмечен как точка расширения (stub), будет завершаться в следующих блоках пайплайна.
 
-from model import ExampleModel
-from repository.base_repository import BaseRepository
+### 3.5. Проверка дедупликации
 
-class ExampleRepository(BaseRepository[ExampleModel]):
-    def __init__(self):
-        super().__init__(ExampleModel)
+Повтори `POST` с тем же `source + external_id`:
+- ожидается `409 Conflict`.
+
+## 4. Тесты
+
+Запуск целевых тестов:
+
+```powershell
+python -m pytest -q tests\F004_manual_add tests\F003_papers_read tests\F005_health_check
 ```
 
-### 4. Создать сервис
+## 5. Работа с Alembic
 
-```python
-# service/example/example_service.py
+Полезные команды:
 
-from repository import ExampleRepository
-
-class ExampleService:
-    def __init__(self):
-        self.repo = ExampleRepository()
+```powershell
+python -m alembic current
+python -m alembic history
+python -m alembic upgrade head
 ```
 
-### 5. Создать endpoint
+Создать новую миграцию:
 
-```python
-# api/v1/endpoints/example/get.py
-
-from fastapi import APIRouter
-router = APIRouter()
-
-@router.get("")
-async def get_examples():
-    ...
+```powershell
+python -m alembic revision --autogenerate -m "add ..."
+python -m alembic upgrade head
 ```
 
-### 6. Подключить роутер
+### Важное правило
 
-```python
-# api/v1/include_router.py
+- `upgrade` выполняет SQL миграций и меняет схему БД.
+- `stamp` только записывает версию в `alembic_version`, но не выполняет SQL.
 
-from .endpoints import example_router
-app.include_router(example_router, prefix="/api/v1")
+`stamp` использовать только осознанно.
+
+## 6. Типовые проблемы
+
+### Ошибка `relation "paper" does not exist`
+
+Почти всегда это рассинхрон миграций.
+
+Проверка:
+
+```powershell
+python -c "from core.config import configs; print(configs.database_url_sync)"
+python -m alembic current
+docker exec -it sync-postgres psql -U postgres -d sync_service -c "\dt public.*"
 ```
 
-## Конфигурация
+Если в `alembic_version` стоит `head`, а таблиц нет (на ранней стадии проекта, когда данных нет):
 
-Переменные окружения:
+```powershell
+python -m alembic stamp base
+python -m alembic upgrade head
+```
 
-| Переменная | Описание | По умолчанию |
-|------------|----------|--------------|
-| `MODE_DEBUG` | Режим отладки | `False` |
-| `DB_ENGINE` | Тип БД | `postgresql` |
-| `DB_HOST` | Хост БД | `localhost` |
-| `DB_PORT` | Порт БД | `5432` |
-| `DB_NAME` | Имя БД | — |
-| `DB_USER` | Пользователь БД | — |
-| `DB_PASSWORD` | Пароль БД | — |
+## 7. Структура проекта
 
-## Документация архитектуры
-
-Подробная документация по архитектуре: [docs/](docs/README.md)
+- `api/` — HTTP-эндпоинты
+- `service/` — бизнес-логика
+- `repository/` — доступ к БД
+- `model/` — SQLAlchemy-модели
+- `schema/` — Pydantic-схемы
+- `migrations/` — Alembic-миграции
+- `tests/` — тесты по фичам
+- `storage/` — файловое хранилище (PDF/TXT)
