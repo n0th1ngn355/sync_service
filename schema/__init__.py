@@ -17,6 +17,11 @@ from .paper.paper_schema import (
     StatsBucketSchema,
     TopMaterialSchema,
 )
+from .scheduler.scheduler_schema import (
+    SchedulerRunResponseSchema,
+    SchedulerScheduleUpdateSchema,
+    SchedulerStatusResponseSchema,
+)
 from .user.user_schema import UserCreateSchema, UserGetOrCreateResponseSchema, UserResponseSchema
 
 __all__ = [
@@ -31,6 +36,9 @@ __all__ = [
     "StatsBucketSchema",
     "TopMaterialSchema",
     "PaperStatsResponseSchema",
+    "SchedulerStatusResponseSchema",
+    "SchedulerScheduleUpdateSchema",
+    "SchedulerRunResponseSchema",
     "UserCreateSchema",
     "UserResponseSchema",
     "UserGetOrCreateResponseSchema",

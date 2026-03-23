@@ -3,6 +3,7 @@
 Сервис для синхронизации и хранения научных статей по сверхпроводимости.
 
 Текущий статус реализации:
+- F002: управление расписанием синхронизации (`/api/v1/scheduler/*`)
 - F003: чтение статей (`GET /api/v1/papers`, детали, контент, статистика)
 - F004: ручное добавление статей (`POST /api/v1/papers`, JSON и multipart)
 - F005: health-check (`/health`, `/health/live`, `/health/ready`)
@@ -48,6 +49,10 @@ SERVICE_VERSION=0.1.0
 
 STORAGE_PATH=storage
 
+# F002 scheduler defaults
+SCHEDULER_JOB_NAME=sync_pipeline
+SCHEDULER_DEFAULT_CRON=0 * * * *
+
 DB_ENGINE=postgresql
 DB_HOST=localhost
 DB_PORT=5432
@@ -74,7 +79,7 @@ Swagger:
 
 ## 3. Ручная проверка API
 
-### 3.1. Health-check
+### 3.1. Health-check (F005)
 
 ```powershell
 curl http://localhost:8000/health
@@ -82,14 +87,55 @@ curl http://localhost:8000/health/live
 curl http://localhost:8000/health/ready
 ```
 
-### 3.2. Проверка чтения статей (F003)
+### 3.2. Scheduler API (F002)
+
+Получить статус расписания:
+
+```powershell
+curl http://localhost:8000/api/v1/scheduler/status
+```
+
+Обновить расписание cron:
+
+```powershell
+curl -X PUT http://localhost:8000/api/v1/scheduler/schedule `
+  -H "Content-Type: application/json" `
+  -d '{"cron_expression":"0 3 * * *"}'
+```
+
+Обновить расписание preset:
+
+```powershell
+curl -X PUT http://localhost:8000/api/v1/scheduler/schedule `
+  -H "Content-Type: application/json" `
+  -d '{"preset":"weekly"}'
+```
+
+Ручной запуск:
+
+```powershell
+curl -X POST http://localhost:8000/api/v1/scheduler/run
+```
+
+Пауза / возобновление:
+
+```powershell
+curl -X POST http://localhost:8000/api/v1/scheduler/pause
+curl -X POST http://localhost:8000/api/v1/scheduler/resume
+```
+
+Ожидания:
+- `/run`: `202 Accepted`, если не запущено; `409 Conflict`, если уже выполняется
+- `/schedule`: изменения применяются без перезапуска (hot reload)
+
+### 3.3. Проверка чтения статей (F003)
 
 ```powershell
 curl "http://localhost:8000/api/v1/papers?offset=0&limit=10"
 curl http://localhost:8000/api/v1/papers/stats
 ```
 
-### 3.3. Добавить статью без PDF (F004)
+### 3.4. Добавить статью без PDF (F004)
 
 ```powershell
 curl -X POST http://localhost:8000/api/v1/papers `
@@ -101,7 +147,7 @@ curl -X POST http://localhost:8000/api/v1/papers `
 - HTTP `201`
 - `status = "DONE"`
 
-### 3.4. Добавить статью с PDF (F004)
+### 3.5. Добавить статью с PDF (F004)
 
 ```powershell
 curl -X POST http://localhost:8000/api/v1/papers `
@@ -115,9 +161,9 @@ curl -X POST http://localhost:8000/api/v1/papers `
 - PDF сохраняется в `STORAGE_PATH/papers/<paper_id>/...`
 
 Важно:
-- В текущей реализации запуск фоновой обработки PDF после загрузки отмечен как точка расширения (stub), будет завершаться в следующих блоках пайплайна.
+- Полная фоновая обработка PDF после загрузки — следующими блоками пайплайна.
 
-### 3.5. Проверка дедупликации
+### 3.6. Проверка дедупликации (F004)
 
 Повтори `POST` с тем же `source + external_id`:
 - ожидается `409 Conflict`.
@@ -127,7 +173,7 @@ curl -X POST http://localhost:8000/api/v1/papers `
 Запуск целевых тестов:
 
 ```powershell
-python -m pytest -q tests\F004_manual_add tests\F003_papers_read tests\F005_health_check
+python -m pytest -q tests\F002_scheduler tests\F003_papers_read tests\F004_manual_add tests\F005_health_check
 ```
 
 ## 5. Работа с Alembic
@@ -174,6 +220,11 @@ docker exec -it sync-postgres psql -U postgres -d sync_service -c "\dt public.*"
 python -m alembic stamp base
 python -m alembic upgrade head
 ```
+
+### Ошибка `Pipeline is already running`
+
+`POST /api/v1/scheduler/run` уже выполняется в другом запуске.
+Подожди завершения и повтори запрос.
 
 ## 7. Структура проекта
 

@@ -20,6 +20,8 @@ class Configs:
     SERVICE_VERSION: str = os.getenv("SERVICE_VERSION", "0.1.0")
 
     STORAGE_PATH: str = os.getenv("STORAGE_PATH", "storage")
+    SCHEDULER_DEFAULT_CRON: str = os.getenv("SCHEDULER_DEFAULT_CRON", "0 * * * *")
+    SCHEDULER_JOB_NAME: str = os.getenv("SCHEDULER_JOB_NAME", "sync_pipeline")
 
     DB_ENGINE: str = os.getenv("DB_ENGINE", "postgresql")
     DB_HOST: str = os.getenv("DB_HOST", "localhost")
