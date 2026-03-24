@@ -3,6 +3,7 @@
 Сервис для синхронизации и хранения научных статей по сверхпроводимости.
 
 Текущий статус реализации:
+- F001: автоматическая синхронизация 1→4 (OAI-PMH, manifest index, PDF download, PDF→text→payload)
 - F002: управление расписанием синхронизации (`/api/v1/scheduler/*`)
 - F003: чтение статей (`GET /api/v1/papers`, детали, контент, статистика)
 - F004: ручное добавление статей (`POST /api/v1/papers`, JSON и multipart)
@@ -44,10 +45,27 @@ docker run --name sync-postgres `
 
 ```env
 MODE_DEBUG=True
+LOG_LEVEL=INFO
 SERVICE_NAME=ArXiv Superconductor Papers Sync Service
 SERVICE_VERSION=0.1.0
 
 STORAGE_PATH=storage
+
+# F001 sync settings
+SYNC_OVERLAP_DAYS=2
+SYNC_PROCESS_BATCH_SIZE=300
+
+ARXIV_OAI_BASE_URL=https://oaipmh.arxiv.org/oai
+ARXIV_OAI_SET=physics:cond-mat
+ARXIV_MANIFEST_URL=
+ARXIV_PDF_BASE_URL=https://arxiv.org/pdf
+ARXIV_HTTP_TIMEOUT_SECONDS=60
+
+# Optional S3 TAR download mode (F001 step 3)
+ARXIV_PDF_USE_S3=False
+ARXIV_S3_BUCKET=arxiv
+ARXIV_S3_REGION=us-east-1
+ARXIV_S3_REQUEST_PAYER=True
 
 # F002 scheduler defaults
 SCHEDULER_JOB_NAME=sync_pipeline
@@ -73,6 +91,8 @@ python -m alembic current
 ```powershell
 python main.py
 ```
+
+В консоль будут выводиться логи scheduler и sync pipeline (старт, прогресс, ошибки, итог).
 
 Swagger:
 - `http://localhost:8000/docs`
@@ -128,14 +148,41 @@ curl -X POST http://localhost:8000/api/v1/scheduler/resume
 - `/run`: `202 Accepted`, если не запущено; `409 Conflict`, если уже выполняется
 - `/schedule`: изменения применяются без перезапуска (hot reload)
 
-### 3.3. Проверка чтения статей (F003)
+### 3.3. Проверка автосинхронизации (F001)
+
+F001 запускается через scheduler:
+
+```powershell
+curl -X POST http://localhost:8000/api/v1/scheduler/run
+```
+
+Проверить результат:
+
+```powershell
+curl http://localhost:8000/api/v1/scheduler/status
+curl "http://localhost:8000/api/v1/papers?source=arxiv&offset=0&limit=20"
+```
+
+В БД:
+
+```powershell
+docker exec -it sync-postgres psql -U postgres -d sync_service -c "select source,last_status,last_success_datestamp,last_rows,total_rows from sync_state order by updated_at desc limit 3;"
+docker exec -it sync-postgres psql -U postgres -d sync_service -c "select status,count(*) from paper group by status order by status;"
+```
+
+Ожидания:
+- новые OAI-записи `cond-mat.supr-con` создаются как `paper.status=NEW` (шаг metadata sync)
+- при наличии PDF статья доходит до `DONE`/`FILTERED`, ошибки фиксируются как `ERROR`/`NOT_FOUND`
+- `sync_state` обновляет `last_success_datestamp` и `last_status`
+
+### 3.4. Проверка чтения статей (F003)
 
 ```powershell
 curl "http://localhost:8000/api/v1/papers?offset=0&limit=10"
 curl http://localhost:8000/api/v1/papers/stats
 ```
 
-### 3.4. Добавить статью без PDF (F004)
+### 3.5. Добавить статью без PDF (F004)
 
 ```powershell
 curl -X POST http://localhost:8000/api/v1/papers `
@@ -147,7 +194,7 @@ curl -X POST http://localhost:8000/api/v1/papers `
 - HTTP `201`
 - `status = "DONE"`
 
-### 3.5. Добавить статью с PDF (F004)
+### 3.6. Добавить статью с PDF (F004)
 
 ```powershell
 curl -X POST http://localhost:8000/api/v1/papers `
@@ -163,7 +210,7 @@ curl -X POST http://localhost:8000/api/v1/papers `
 Важно:
 - Полная фоновая обработка PDF после загрузки — следующими блоками пайплайна.
 
-### 3.6. Проверка дедупликации (F004)
+### 3.7. Проверка дедупликации (F004)
 
 Повтори `POST` с тем же `source + external_id`:
 - ожидается `409 Conflict`.
@@ -173,7 +220,7 @@ curl -X POST http://localhost:8000/api/v1/papers `
 Запуск целевых тестов:
 
 ```powershell
-python -m pytest -q tests\F002_scheduler tests\F003_papers_read tests\F004_manual_add tests\F005_health_check
+python -m pytest -q tests
 ```
 
 ## 5. Работа с Alembic

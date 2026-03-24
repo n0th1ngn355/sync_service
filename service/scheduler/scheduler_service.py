@@ -7,6 +7,7 @@ Scenarios: SC005, SC006, SC007, SC008, SC009
 """
 
 import asyncio
+import logging
 from contextlib import asynccontextmanager
 from datetime import datetime
 from uuid import uuid4
@@ -24,8 +25,11 @@ from schema import (
     SchedulerScheduleUpdateSchema,
     SchedulerStatusResponseSchema,
 )
+from service.sync.pipeline_service import sync_pipeline_service
 from .apscheduler_compat import CronTrigger
 from .runtime import SchedulerRuntime, scheduler_runtime
+
+logger = logging.getLogger(__name__)
 
 
 class SchedulerService:
@@ -62,7 +66,14 @@ class SchedulerService:
                     is_active=config.is_active,
                     callback=self._run_from_scheduler,
                 )
+                logger.info(
+                    "Scheduler bootstrapped job=%s cron=%s active=%s",
+                    config.job_name,
+                    config.cron_expression,
+                    config.is_active,
+                )
         except Exception:
+            logger.exception("Failed to bootstrap scheduler runtime")
             return
 
     async def update_schedule(
@@ -106,6 +117,7 @@ class SchedulerService:
         )
 
         asyncio.create_task(self._run_pipeline(run_id))
+        logger.info("Manual scheduler run requested run_id=%s", run_id)
         return SchedulerRunResponseSchema(
             run_id=run_id,
             status=SchedulerStatusEnum.RUNNING.value,
@@ -140,10 +152,12 @@ class SchedulerService:
     async def _run_from_scheduler(self) -> None:
         acquired = await self._runtime.acquire_run_lock()
         if not acquired:
+            logger.info("Scheduled tick skipped: run is already in progress")
             return
 
         run_id = uuid4().hex
         started_at = datetime.utcnow()
+        logger.info("Scheduled run triggered run_id=%s", run_id)
         async with self._session_scope() as session:
             config = await self._ensure_config(session)
             await self._repo.mark_running(
@@ -157,13 +171,25 @@ class SchedulerService:
     async def _run_pipeline(self, run_id: str) -> None:
         status = SchedulerStatusEnum.OK
         note = f"run_id={run_id}; status=OK"
+        logger.info("Pipeline execution started run_id=%s", run_id)
 
         try:
-            # Pipeline integration (sync 1->5) will be implemented in next blocks.
-            await asyncio.sleep(0)
+            async with self._session_scope() as session:
+                result = await sync_pipeline_service.run_once(session)
+                note = (
+                    f"run_id={run_id}; status=OK; "
+                    f"metadata_inserted={result.metadata_inserted}; "
+                    f"processed={result.processed_count}; "
+                    f"done={result.done_count}; "
+                    f"filtered={result.filtered_count}; "
+                    f"errors={result.error_count}; "
+                    f"skipped={result.skipped_count}"
+                )
+                logger.info("Pipeline execution finished run_id=%s %s", run_id, note)
         except Exception as exc:
             status = SchedulerStatusEnum.ERROR
             note = f"run_id={run_id}; error={exc}"
+            logger.exception("Pipeline execution failed run_id=%s", run_id)
         finally:
             try:
                 async with self._session_scope() as session:
@@ -176,6 +202,7 @@ class SchedulerService:
                     )
             finally:
                 self._runtime.release_run_lock()
+                logger.info("Pipeline execution finalized run_id=%s status=%s", run_id, status.value)
 
     async def _ensure_config(self, session: AsyncSession) -> SchedulerConfigModel:
         config = await self._repo.get_or_create(

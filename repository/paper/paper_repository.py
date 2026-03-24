@@ -7,6 +7,7 @@ Scenarios: SC010, SC011, SC012, SC013, SC014, SC015, SC016, SC017, SC018
 """
 
 from collections import Counter
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import Float, String, cast, func, select
@@ -16,11 +17,17 @@ from model.paper.paper_content_model import PaperContentModel
 from model.paper.paper_file_model import PaperFileModel
 from model.paper.paper_model import PaperModel
 from model.paper.paper_source_meta_model import PaperSourceMetaModel
+from model.enums import PaperStatusEnum
 
 
 class PaperRepository:
     def __init__(self):
         self.model = PaperModel
+
+    @staticmethod
+    def _sanitize_text(value: str) -> str:
+        # PostgreSQL TEXT does not allow NUL bytes.
+        return value.replace("\x00", "")
 
     async def get_by_source_external_id(
         self,
@@ -33,6 +40,28 @@ class PaperRepository:
             self.model.external_id == external_id,
         )
         return (await session.execute(stmt)).scalar_one_or_none()
+
+    async def list_processable_papers(
+        self,
+        session: AsyncSession,
+        *,
+        source: str | None = None,
+        limit: int = 500,
+    ) -> list[PaperModel]:
+        stmt = select(self.model).where(
+            self.model.status.in_(
+                [
+                    PaperStatusEnum.NEW.value,
+                    PaperStatusEnum.DOWNLOADING.value,
+                    PaperStatusEnum.PROCESSING.value,
+                ]
+            )
+        )
+        if source:
+            stmt = stmt.where(self.model.source == source)
+
+        stmt = stmt.order_by(self.model.id.asc()).limit(limit)
+        return list((await session.execute(stmt)).scalars().all())
 
     async def create_paper(self, session: AsyncSession, **kwargs) -> PaperModel:
         paper = self.model(**kwargs)
@@ -48,7 +77,10 @@ class PaperRepository:
         paper_id: int,
         full_text: str,
     ) -> PaperContentModel:
-        content = PaperContentModel(paper_id=paper_id, full_text=full_text)
+        content = PaperContentModel(
+            paper_id=paper_id,
+            full_text=self._sanitize_text(full_text),
+        )
         session.add(content)
         await session.flush()
         await session.refresh(content)
@@ -93,6 +125,109 @@ class PaperRepository:
         await session.flush()
         await session.refresh(source_meta_model)
         return source_meta_model
+
+    async def upsert_paper_source_meta(
+        self,
+        session: AsyncSession,
+        *,
+        paper_id: int,
+        source_meta: dict[str, Any],
+    ) -> PaperSourceMetaModel:
+        stmt = select(PaperSourceMetaModel).where(PaperSourceMetaModel.paper_id == paper_id)
+        existing = (await session.execute(stmt)).scalar_one_or_none()
+        if existing is None:
+            return await self.create_paper_source_meta(
+                session,
+                paper_id=paper_id,
+                source_meta=source_meta,
+            )
+
+        existing.source_meta = source_meta
+        session.add(existing)
+        await session.flush()
+        await session.refresh(existing)
+        return existing
+
+    async def upsert_paper_content(
+        self,
+        session: AsyncSession,
+        *,
+        paper_id: int,
+        full_text: str,
+    ) -> PaperContentModel:
+        sanitized_text = self._sanitize_text(full_text)
+        stmt = select(PaperContentModel).where(PaperContentModel.paper_id == paper_id)
+        existing = (await session.execute(stmt)).scalar_one_or_none()
+        if existing is None:
+            return await self.create_paper_content(
+                session,
+                paper_id=paper_id,
+                full_text=sanitized_text,
+            )
+
+        existing.full_text = sanitized_text
+        session.add(existing)
+        await session.flush()
+        await session.refresh(existing)
+        return existing
+
+    async def upsert_paper_file(
+        self,
+        session: AsyncSession,
+        *,
+        paper_id: int,
+        file_type: str,
+        storage_path: str,
+        mime_type: str | None,
+        size_bytes: int | None,
+        checksum: str | None,
+    ) -> PaperFileModel:
+        stmt = select(PaperFileModel).where(
+            PaperFileModel.paper_id == paper_id,
+            PaperFileModel.file_type == file_type,
+        )
+        existing = (await session.execute(stmt)).scalar_one_or_none()
+        if existing is None:
+            return await self.create_paper_file(
+                session,
+                paper_id=paper_id,
+                file_type=file_type,
+                storage_path=storage_path,
+                mime_type=mime_type,
+                size_bytes=size_bytes,
+                checksum=checksum,
+            )
+
+        existing.storage_path = storage_path
+        existing.mime_type = mime_type
+        existing.size_bytes = size_bytes
+        existing.checksum = checksum
+        session.add(existing)
+        await session.flush()
+        await session.refresh(existing)
+        return existing
+
+    async def mark_status(
+        self,
+        session: AsyncSession,
+        *,
+        paper: PaperModel,
+        status: str,
+        last_error: str | None = None,
+        increment_attempts: bool = False,
+        payload: dict[str, Any] | None = None,
+    ) -> PaperModel:
+        paper.status = status
+        paper.last_error = self._sanitize_text(last_error) if last_error else None
+        if increment_attempts:
+            paper.attempts = int(paper.attempts or 0) + 1
+        if payload is not None:
+            paper.payload = payload
+        paper.updated_at = datetime.utcnow()
+        session.add(paper)
+        await session.flush()
+        await session.refresh(paper)
+        return paper
 
     def _apply_filters(
         self,

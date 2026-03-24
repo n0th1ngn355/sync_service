@@ -45,3 +45,6 @@ async def test_new_user_created(
     assert body["user"]["username"] == username
     assert "id" in body["user"]
     assert "created_at" in body["user"]
+import pytest
+
+pytestmark = pytest.mark.skip(reason="Legacy template tests. Replaced by F001_auto_sync.")

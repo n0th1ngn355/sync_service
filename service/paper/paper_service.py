@@ -6,6 +6,8 @@ Feature: F003, F004
 Scenarios: SC010, SC011, SC012, SC013, SC014, SC015, SC016, SC017, SC018
 """
 
+import asyncio
+from contextlib import asynccontextmanager
 from hashlib import sha256
 from pathlib import Path
 from uuid import uuid4
@@ -13,10 +15,12 @@ from uuid import uuid4
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core import db_connect
 from core.config import configs
 from core.exceptions import ConflictError, NotFoundError, ValidationError
 from model.enums import FileTypeEnum, PaperStatusEnum
 from repository.paper.paper_repository import PaperRepository
+from service.sync.providers import DefaultPdfProcessor
 from schema import (
     PaperCreateResponseSchema,
     PaperCreateSchema,
@@ -34,8 +38,18 @@ class PaperService:
     _MAX_PDF_SIZE_BYTES = 50 * 1024 * 1024
     _ALLOWED_PDF_MIME_TYPES = {"application/pdf"}
 
-    def __init__(self, repo: PaperRepository | None = None):
+    @staticmethod
+    def _sanitize_text(value: str) -> str:
+        # PostgreSQL TEXT does not allow NUL bytes.
+        return value.replace("\x00", "")
+
+    def __init__(
+        self,
+        repo: PaperRepository | None = None,
+        pdf_processor: DefaultPdfProcessor | None = None,
+    ):
         self._repo = repo or PaperRepository()
+        self._pdf_processor = pdf_processor or DefaultPdfProcessor()
 
     async def create_paper(
         self,
@@ -106,7 +120,11 @@ class PaperService:
                 size_bytes=size_bytes,
                 checksum=checksum,
             )
-            await self._enqueue_pdf_processing(paper.id)
+            await self._enqueue_pdf_processing(
+                paper_id=paper.id,
+                pdf_bytes=pdf_bytes,
+                pdf_filename=pdf_filename,
+            )
         else:
             await self._repo.create_paper_content(
                 session,
@@ -291,6 +309,124 @@ class PaperService:
 
         return saved_path.as_posix(), len(pdf_bytes), sha256(pdf_bytes).hexdigest()
 
-    async def _enqueue_pdf_processing(self, paper_id: int) -> None:
-        # Queue integration will be added in sync pipeline blocks.
-        _ = paper_id
+    async def _enqueue_pdf_processing(
+        self,
+        *,
+        paper_id: int,
+        pdf_bytes: bytes,
+        pdf_filename: str | None,
+    ) -> None:
+        asyncio.create_task(
+            self._process_uploaded_pdf_in_background(
+                paper_id=paper_id,
+                pdf_bytes=pdf_bytes,
+                pdf_filename=pdf_filename,
+            )
+        )
+
+    async def _process_uploaded_pdf_in_background(
+        self,
+        *,
+        paper_id: int,
+        pdf_bytes: bytes,
+        pdf_filename: str | None,
+    ) -> None:
+        # Request transaction can still be open when task starts, so retry briefly.
+        for _ in range(20):
+            paper_not_visible = False
+            async with self._session_scope() as session:
+                paper = await self._repo.get_by_id(session, paper_id)
+                if paper is None:
+                    paper_not_visible = True
+                else:
+                    if paper.status in (PaperStatusEnum.DONE.value, PaperStatusEnum.COMPLETED.value):
+                        return
+
+                    try:
+                        parsed = await self._pdf_processor.process(pdf_bytes)
+                        clean_text = self._sanitize_text(parsed.full_text)
+                        txt_path, txt_size, txt_checksum = self._save_text_file(
+                            paper_id=paper_id,
+                            full_text=clean_text,
+                            filename=pdf_filename,
+                        )
+                        await self._repo.upsert_paper_file(
+                            session,
+                            paper_id=paper_id,
+                            file_type=FileTypeEnum.TXT.value,
+                            storage_path=txt_path,
+                            mime_type="text/plain; charset=utf-8",
+                            size_bytes=txt_size,
+                            checksum=txt_checksum,
+                        )
+                        await self._repo.upsert_paper_content(
+                            session,
+                            paper_id=paper_id,
+                            full_text=clean_text,
+                        )
+                        # BR024: manual papers are not filtered by BR002/BR003.
+                        await self._repo.mark_status(
+                            session,
+                            paper=paper,
+                            status=PaperStatusEnum.DONE.value,
+                            last_error=None,
+                            payload=parsed.payload,
+                        )
+                        return
+                    except Exception as exc:
+                        await session.rollback()
+                        reloaded_paper = await self._repo.get_by_id(session, paper_id)
+                        if reloaded_paper is None:
+                            return
+                        await self._repo.mark_status(
+                            session,
+                            paper=reloaded_paper,
+                            status=PaperStatusEnum.ERROR.value,
+                            last_error=str(exc)[:4000],
+                            increment_attempts=True,
+                        )
+                        return
+
+            if paper_not_visible:
+                await asyncio.sleep(0.1)
+
+        # If record is still not visible after retries, persist a best-effort error status.
+        async with self._session_scope() as session:
+            paper = await self._repo.get_by_id(session, paper_id)
+            if paper is None:
+                return
+            await self._repo.mark_status(
+                session,
+                paper=paper,
+                status=PaperStatusEnum.ERROR.value,
+                last_error="Background processing timeout waiting for committed paper",
+                increment_attempts=True,
+            )
+
+    def _save_text_file(
+        self,
+        *,
+        paper_id: int,
+        full_text: str,
+        filename: str | None,
+    ) -> tuple[str, int, str]:
+        storage_dir = Path(configs.STORAGE_PATH) / "papers" / str(paper_id)
+        storage_dir.mkdir(parents=True, exist_ok=True)
+
+        original_name = Path(filename or "paper").stem or "paper"
+        saved_name = f"{uuid4().hex}_{original_name}.txt"
+        saved_path = storage_dir / saved_name
+        raw = full_text.encode("utf-8", errors="ignore")
+        saved_path.write_bytes(raw)
+        return saved_path.as_posix(), len(raw), sha256(raw).hexdigest()
+
+    @asynccontextmanager
+    async def _session_scope(self):
+        db_connect._ensure_initialized()
+        async with db_connect.async_session() as session:
+            try:
+                yield session
+                await session.commit()
+            except Exception:
+                await session.rollback()
+                raise
