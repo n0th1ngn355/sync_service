@@ -17,6 +17,35 @@
 
 ## 2. Быстрый старт
 
+### 2.0. Docker Compose (одной командой)
+
+```powershell
+cd sync_service
+copy .env.example .env
+docker compose up --build
+```
+
+Проверка, что сервис поднялся:
+
+```powershell
+curl http://localhost:8000/health
+curl http://localhost:8000/health/ready
+```
+
+Ожидается `200 OK`.
+
+Остановить:
+
+```powershell
+docker compose down
+```
+
+Остановить и удалить тома БД/хранилища:
+
+```powershell
+docker compose down -v
+```
+
 ### 2.1. Виртуальное окружение и зависимости
 
 ```powershell
