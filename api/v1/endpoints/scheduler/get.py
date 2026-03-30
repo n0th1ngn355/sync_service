@@ -20,4 +20,5 @@ router = APIRouter(prefix="/scheduler", tags=["Scheduler"])
 async def get_scheduler_status(
     session: AsyncSession = Depends(db_connect.get_session),
 ) -> SchedulerStatusResponseSchema:
+    """Return current scheduler configuration and runtime state."""
     return await scheduler_service.get_status(session)

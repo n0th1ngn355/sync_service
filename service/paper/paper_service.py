@@ -35,6 +35,15 @@ from schema import (
 
 
 class PaperService:
+    """
+    Business logic for PRD features F003 (read) and F004 (manual add).
+
+    Responsibilities:
+    - manual paper creation with optional PDF upload
+    - asynchronous PDF processing for manual uploads
+    - read endpoints with filters, detail, content and stats views
+    """
+
     _MAX_PDF_SIZE_BYTES = 50 * 1024 * 1024
     _ALLOWED_PDF_MIME_TYPES = {"application/pdf"}
 
@@ -60,6 +69,13 @@ class PaperService:
         pdf_filename: str | None = None,
         pdf_mime_type: str | None = None,
     ) -> PaperCreateResponseSchema:
+        """
+        Create manual paper record and optionally schedule PDF extraction.
+
+        Behavior:
+        - without PDF: creates DONE paper with empty content
+        - with PDF: stores file and starts background processing
+        """
         normalized = self._normalize_create_payload(payload)
         external_id = normalized["external_id"]
 
@@ -156,6 +172,7 @@ class PaperService:
         offset: int,
         limit: int,
     ) -> PaperListResponseSchema:
+        """Return filtered paper list with validated pagination parameters."""
         if offset < 0:
             raise ValidationError("offset must be >= 0")
 
@@ -203,6 +220,7 @@ class PaperService:
         session: AsyncSession,
         paper_id: int,
     ) -> PaperDetailResponseSchema:
+        """Return one paper detail or raise NotFoundError."""
         paper = await self._repo.get_by_id(session, paper_id)
         if paper is None:
             raise NotFoundError("paper", paper_id)
@@ -232,6 +250,7 @@ class PaperService:
         session: AsyncSession,
         paper_id: int,
     ) -> PaperContentResponseSchema:
+        """Return extracted full text for a paper."""
         content = await self._repo.get_content(session, paper_id)
         if content is None:
             raise NotFoundError("paper_content", paper_id)
@@ -242,6 +261,7 @@ class PaperService:
         )
 
     async def get_stats(self, session: AsyncSession) -> PaperStatsResponseSchema:
+        """Return aggregated metrics used by `/api/v1/papers/stats`."""
         total_count, by_source, by_status, by_type, top_materials = await self._repo.get_stats(session)
 
         return PaperStatsResponseSchema(
@@ -253,6 +273,7 @@ class PaperService:
         )
 
     def _normalize_create_payload(self, payload: PaperCreateSchema) -> dict:
+        """Normalize and validate required metadata fields for create operation."""
         title = payload.title.strip()
         source = payload.source.strip()
 
@@ -280,6 +301,7 @@ class PaperService:
         }
 
     def _validate_pdf(self, *, pdf_bytes: bytes | None, mime_type: str | None) -> None:
+        """Validate uploaded PDF MIME type and size constraints."""
         if mime_type is None or mime_type.lower() not in self._ALLOWED_PDF_MIME_TYPES:
             raise ValidationError("Invalid PDF MIME type. Expected application/pdf")
 
@@ -296,6 +318,7 @@ class PaperService:
         pdf_bytes: bytes,
         filename: str | None,
     ) -> tuple[str, int, str]:
+        """Persist uploaded PDF and return storage metadata tuple."""
         storage_dir = Path(configs.STORAGE_PATH) / "papers" / str(paper_id)
         storage_dir.mkdir(parents=True, exist_ok=True)
 
@@ -316,6 +339,7 @@ class PaperService:
         pdf_bytes: bytes,
         pdf_filename: str | None,
     ) -> None:
+        """Schedule asynchronous processing task for uploaded PDF."""
         asyncio.create_task(
             self._process_uploaded_pdf_in_background(
                 paper_id=paper_id,
@@ -331,6 +355,7 @@ class PaperService:
         pdf_bytes: bytes,
         pdf_filename: str | None,
     ) -> None:
+        """Process uploaded PDF in isolated DB sessions and update paper status."""
         # Request transaction can still be open when task starts, so retry briefly.
         for _ in range(20):
             paper_not_visible = False
@@ -410,6 +435,7 @@ class PaperService:
         full_text: str,
         filename: str | None,
     ) -> tuple[str, int, str]:
+        """Persist extracted text artifact and return storage metadata tuple."""
         storage_dir = Path(configs.STORAGE_PATH) / "papers" / str(paper_id)
         storage_dir.mkdir(parents=True, exist_ok=True)
 
@@ -422,6 +448,7 @@ class PaperService:
 
     @asynccontextmanager
     async def _session_scope(self):
+        """Provide independent transactional session for background jobs."""
         db_connect._ensure_initialized()
         async with db_connect.async_session() as session:
             try:

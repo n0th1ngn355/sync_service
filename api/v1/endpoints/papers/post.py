@@ -28,6 +28,13 @@ async def create_paper(
     request: Request,
     session: AsyncSession = Depends(db_connect.get_session),
 ) -> PaperCreateResponseSchema:
+    """
+    Create a paper manually (F004).
+
+    Supported content types:
+    - `application/json` for metadata-only create
+    - `multipart/form-data` for metadata + PDF upload
+    """
     content_type = request.headers.get("content-type", "")
     media_type = content_type.split(";", 1)[0].strip().lower()
 
@@ -60,6 +67,7 @@ async def create_paper(
 
 
 async def _parse_json_body(request: Request) -> dict[str, Any]:
+    """Parse and validate JSON request body as an object."""
     try:
         body = await request.json()
     except JSONDecodeError as exc:
@@ -72,6 +80,7 @@ async def _parse_json_body(request: Request) -> dict[str, Any]:
 
 
 def _parse_payload_from_form(form: FormData) -> PaperCreateSchema:
+    """Build `PaperCreateSchema` from multipart form data."""
     metadata_raw = form.get("metadata")
     if metadata_raw is not None:
         if not isinstance(metadata_raw, str):
@@ -111,6 +120,7 @@ def _parse_payload_from_form(form: FormData) -> PaperCreateSchema:
 
 
 def _extract_upload(form: FormData) -> UploadFile | None:
+    """Extract uploaded PDF file from supported multipart keys."""
     for key in ("file", "pdf", "paper_pdf"):
         candidate = form.get(key)
         if isinstance(candidate, UploadFile):
@@ -119,6 +129,7 @@ def _extract_upload(form: FormData) -> UploadFile | None:
 
 
 def _validate_paper_payload(payload: dict[str, Any]) -> PaperCreateSchema:
+    """Validate payload via Pydantic and normalize validation errors."""
     try:
         return PaperCreateSchema.model_validate(payload)
     except PydanticValidationError as exc:

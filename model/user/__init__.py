@@ -1,5 +1,3 @@
-"""Модели сущности User."""
+﻿"""Users model module was removed from active PRD scope."""
 
-from model.user.user_model import UserModel
-
-__all__ = ["UserModel"]
+__all__: list[str] = []

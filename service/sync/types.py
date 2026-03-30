@@ -7,6 +7,8 @@ from typing import Any
 
 @dataclass(slots=True)
 class OaiPaperRecord:
+    """Normalized metadata record fetched from OAI-PMH."""
+
     external_id: str
     title: str
     categories: str
@@ -19,12 +21,16 @@ class OaiPaperRecord:
 
 @dataclass(slots=True)
 class MetadataSyncResult:
+    """Result of metadata-only synchronization stage."""
+
     inserted_count: int
     checkpoint_datestamp: date | None
 
 
 @dataclass(slots=True)
 class PdfProcessResult:
+    """Result of PDF parsing and payload extraction."""
+
     full_text: str
     payload: dict[str, Any]
     is_filtered: bool
@@ -33,6 +39,8 @@ class PdfProcessResult:
 
 @dataclass(slots=True)
 class ProcessingResult:
+    """Counters for download/process stage outcome."""
+
     processed_count: int
     done_count: int
     filtered_count: int
@@ -42,6 +50,8 @@ class ProcessingResult:
 
 @dataclass(slots=True)
 class FullSyncResult:
+    """Combined result for full pipeline run."""
+
     metadata_inserted: int
     metadata_checkpoint: date | None
     processed_count: int
@@ -49,4 +59,3 @@ class FullSyncResult:
     filtered_count: int
     error_count: int
     skipped_count: int
-

@@ -20,16 +20,32 @@ service = HealthService()
 
 @router.get("", response_model=HealthCheckResponseSchema)
 async def health_check(session: AsyncSession = Depends(db_connect.get_session)) -> HealthCheckResponseSchema:
+    """
+    Return full health diagnostics for operators.
+
+    Includes:
+    - database connectivity
+    - storage availability
+    - last synchronization summary
+    """
     return await service.check_health(session)
 
 
 @router.get("/live")
 async def liveness() -> dict[str, str]:
+    """Liveness probe: process is up."""
     return {"status": "alive"}
 
 
 @router.get("/ready", response_model=HealthCheckResponseSchema)
 async def readiness(session: AsyncSession = Depends(db_connect.get_session)) -> HealthCheckResponseSchema | JSONResponse:
+    """
+    Readiness probe: dependencies are available.
+
+    Returns:
+    - `200` when DB and storage are healthy
+    - `503` when at least one dependency is unavailable
+    """
     result = await service.check_health(session)
 
     if result.database != "connected" or result.storage != "available":

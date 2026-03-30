@@ -19,6 +19,7 @@ from schema import HealthCheckResponseSchema, LastSyncSchema
 
 class HealthService:
     async def check_health(self, session: AsyncSession) -> HealthCheckResponseSchema:
+        """Build full health response used by `/health` and `/health/ready`."""
         db_ok, db_error = await self._check_database(session)
         storage_ok, storage_error = self._check_storage()
 
@@ -42,6 +43,7 @@ class HealthService:
         )
 
     async def _check_database(self, session: AsyncSession) -> tuple[bool, str | None]:
+        """Run lightweight DB connectivity check."""
         try:
             await session.execute(text("SELECT 1"))
             return True, None
@@ -49,6 +51,7 @@ class HealthService:
             return False, str(exc)
 
     def _check_storage(self) -> tuple[bool, str | None]:
+        """Verify storage path exists and is writable."""
         try:
             storage_dir = Path(configs.STORAGE_PATH)
             storage_dir.mkdir(parents=True, exist_ok=True)
@@ -62,6 +65,7 @@ class HealthService:
             return False, str(exc)
 
     async def _fetch_last_sync(self, session: AsyncSession) -> LastSyncSchema:
+        """Read latest sync_state snapshot for observability payload."""
         try:
             result = await session.execute(
                 text(

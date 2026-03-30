@@ -1,5 +1,3 @@
-"""Сервис сущности User."""
+﻿"""Users service module was removed from active PRD scope."""
 
-from service.user.user_service import UserService
-
-__all__ = ["UserService"]
+__all__: list[str] = []

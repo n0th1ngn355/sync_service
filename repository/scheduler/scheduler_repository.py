@@ -16,6 +16,8 @@ from model.enums import SchedulerStatusEnum
 
 
 class SchedulerRepository:
+    """Persistence operations for scheduler_config table."""
+
     def __init__(self):
         self.model = SchedulerConfigModel
 
@@ -25,6 +27,7 @@ class SchedulerRepository:
         *,
         job_name: str,
     ) -> SchedulerConfigModel | None:
+        """Return scheduler config by unique job name."""
         stmt = select(self.model).where(self.model.job_name == job_name)
         return (await session.execute(stmt)).scalar_one_or_none()
 
@@ -36,6 +39,7 @@ class SchedulerRepository:
         cron_expression: str,
         is_active: bool,
     ) -> SchedulerConfigModel:
+        """Return existing config or create one with provided defaults."""
         config = await self.get_by_job_name(session, job_name=job_name)
         if config is not None:
             return config
@@ -52,6 +56,7 @@ class SchedulerRepository:
         return config
 
     async def save(self, session: AsyncSession, config: SchedulerConfigModel) -> SchedulerConfigModel:
+        """Persist scheduler config changes."""
         session.add(config)
         await session.flush()
         await session.refresh(config)
@@ -65,6 +70,7 @@ class SchedulerRepository:
         started_at: datetime,
         note: str | None,
     ) -> SchedulerConfigModel:
+        """Mark scheduler pipeline run as active."""
         config.last_run_at = started_at
         config.last_status = SchedulerStatusEnum.RUNNING.value
         config.note = note
@@ -78,6 +84,7 @@ class SchedulerRepository:
         status: SchedulerStatusEnum,
         note: str | None,
     ) -> SchedulerConfigModel:
+        """Persist final scheduler status for completed run."""
         config.last_status = status.value
         config.note = note
         return await self.save(session, config)

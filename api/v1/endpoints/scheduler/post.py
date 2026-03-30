@@ -20,6 +20,7 @@ router = APIRouter(prefix="/scheduler", tags=["Scheduler"])
 async def run_scheduler_now(
     session: AsyncSession = Depends(db_connect.get_session),
 ) -> SchedulerRunResponseSchema:
+    """Trigger one background pipeline run immediately."""
     return await scheduler_service.run_now(session)
 
 
@@ -27,6 +28,7 @@ async def run_scheduler_now(
 async def pause_scheduler(
     session: AsyncSession = Depends(db_connect.get_session),
 ) -> SchedulerStatusResponseSchema:
+    """Pause periodic scheduler ticks (manual runs stay available)."""
     return await scheduler_service.pause(session)
 
 
@@ -34,4 +36,5 @@ async def pause_scheduler(
 async def resume_scheduler(
     session: AsyncSession = Depends(db_connect.get_session),
 ) -> SchedulerStatusResponseSchema:
+    """Resume periodic scheduler ticks using stored cron expression."""
     return await scheduler_service.resume(session)

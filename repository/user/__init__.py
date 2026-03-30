@@ -1,5 +1,3 @@
-"""Репозиторий сущности User."""
+﻿"""Users repository module was removed from active PRD scope."""
 
-from repository.user.user_repository import UserRepository
-
-__all__ = ["UserRepository"]
+__all__: list[str] = []

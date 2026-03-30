@@ -69,12 +69,15 @@ class PdfProcessor(Protocol):
 
 
 class ArxivOaiMetadataProvider:
+    """HTTP client for arXiv OAI-PMH metadata extraction."""
+
     def __init__(self):
         self._base_url = configs.ARXIV_OAI_BASE_URL
         self._set_spec = configs.ARXIV_OAI_SET
         self._timeout = float(configs.ARXIV_HTTP_TIMEOUT_SECONDS)
 
     async def fetch_records(self, *, from_date: date | None) -> tuple[list[OaiPaperRecord], date | None]:
+        """Fetch and parse OAI pages until resumption token is exhausted."""
         records: list[OaiPaperRecord] = []
         max_datestamp: date | None = None
         token: str | None = None
@@ -107,6 +110,7 @@ class ArxivOaiMetadataProvider:
         return records, max_datestamp
 
     def _parse_page(self, xml_text: str) -> tuple[list[OaiPaperRecord], str | None, date | None]:
+        """Parse one OAI XML page into normalized record DTOs."""
         root = ET.fromstring(xml_text)
         records: list[OaiPaperRecord] = []
         max_datestamp: date | None = None
@@ -188,6 +192,7 @@ class ArxivOaiMetadataProvider:
                 return None
 
     def _parse_authors(self, meta: ET.Element) -> str | None:
+        """Build comma-separated author list from arXiv metadata node."""
         names: list[str] = []
         for author in meta.findall("arxiv:authors/arxiv:author", _OAI_NS):
             keyname = self._safe_text(author.find("arxiv:keyname", _OAI_NS))
@@ -201,11 +206,14 @@ class ArxivOaiMetadataProvider:
 
 
 class ArxivManifestIndexProvider:
+    """Resolver for mapping arXiv IDs to TAR keys via manifest XML."""
+
     def __init__(self):
         self._manifest_url = configs.ARXIV_MANIFEST_URL
         self._timeout = float(configs.ARXIV_HTTP_TIMEOUT_SECONDS)
 
     async def resolve(self, arxiv_ids: Sequence[str]) -> dict[str, str]:
+        """Return `arxiv_id -> tar_key` mapping for provided identifiers."""
         if not self._manifest_url:
             return {}
         if not arxiv_ids:
@@ -232,6 +240,7 @@ class ArxivManifestIndexProvider:
 
     @staticmethod
     def _parse_manifest(content: bytes) -> list[dict[str, str]]:
+        """Parse manifest XML into comparable ranges."""
         entries: list[dict[str, str]] = []
         context = ET.iterparse(io.BytesIO(content), events=("end",))
         for _, elem in context:
@@ -258,11 +267,14 @@ class ArxivManifestIndexProvider:
 
 
 class ArxivPdfFetcher:
+    """PDF fetcher with S3 TAR-first strategy and HTTP fallback."""
+
     def __init__(self):
         self._timeout = float(configs.ARXIV_HTTP_TIMEOUT_SECONDS)
         self._pdf_base_url = configs.ARXIV_PDF_BASE_URL.rstrip("/")
 
     async def fetch_pdf(self, *, arxiv_id: str, tar_key: str | None = None) -> bytes | None:
+        """Fetch one PDF from S3 TAR (optional) or arXiv HTTP endpoint."""
         if configs.ARXIV_PDF_USE_S3 and tar_key:
             pdf_from_s3 = await self._fetch_from_s3_tar(arxiv_id=arxiv_id, tar_key=tar_key)
             if pdf_from_s3 is not None:
@@ -271,6 +283,7 @@ class ArxivPdfFetcher:
         return await self._fetch_from_arxiv_http(arxiv_id)
 
     async def _fetch_from_arxiv_http(self, arxiv_id: str) -> bytes | None:
+        """Fetch PDF directly from `ARXIV_PDF_BASE_URL`."""
         url = f"{self._pdf_base_url}/{arxiv_id}.pdf"
         async with httpx.AsyncClient(timeout=self._timeout, follow_redirects=True) as client:
             response = await client.get(url)
@@ -280,6 +293,7 @@ class ArxivPdfFetcher:
             return response.content or None
 
     async def _fetch_from_s3_tar(self, *, arxiv_id: str, tar_key: str) -> bytes | None:
+        """Extract PDF bytes from one TAR object in S3 bucket."""
         try:
             import boto3  # type: ignore
         except Exception:
@@ -320,7 +334,10 @@ class ArxivPdfFetcher:
 
 
 class DefaultPdfProcessor:
+    """PDF processor: extract full text and build structured payload."""
+
     async def process(self, pdf_bytes: bytes) -> PdfProcessResult:
+        """Parse PDF bytes, apply filters and return extraction result."""
         full_text = await to_thread(self._extract_text, pdf_bytes)
         if not full_text.strip():
             raise RuntimeError("Failed to extract text from PDF")
@@ -343,6 +360,7 @@ class DefaultPdfProcessor:
         return PdfProcessResult(full_text=full_text, payload=payload, is_filtered=False)
 
     def _extract_text(self, pdf_bytes: bytes) -> str:
+        """Extract text with PyMuPDF, then pypdf fallback, then raw decode."""
         try:
             import fitz  # type: ignore
 
@@ -367,6 +385,7 @@ class DefaultPdfProcessor:
         return pdf_bytes.decode("utf-8", errors="ignore").strip()
 
     def _first_page_contains_forbidden(self, text: str) -> bool:
+        """Apply BR002 keyword filter against first page only."""
         if "\f" in text:
             first_page = text.split("\f", 1)[0].lower()
         else:
@@ -374,6 +393,7 @@ class DefaultPdfProcessor:
         return any(word in first_page for word in _FORBIDDEN_FIRST_PAGE_KEYWORDS)
 
     def _build_payload(self, text: str) -> dict[str, Any]:
+        """Build payload fields required by BR008."""
         lowered = text.lower()
         return {
             "material": self._extract_materials(text),
@@ -387,6 +407,7 @@ class DefaultPdfProcessor:
         }
 
     def _extract_tc_k(self, text: str) -> float | None:
+        """Extract max observed Tc value in Kelvin from free text."""
         values: list[float] = []
         for raw in _TEMPERATURE_K_RE.findall(text):
             try:
@@ -396,6 +417,7 @@ class DefaultPdfProcessor:
         return max(values) if values else None
 
     def _extract_type(self, lowered: str) -> str:
+        """Classify paper as experiment, theory or hybrid."""
         has_exp = bool(
             re.search(
                 r"\b(experiment|experimental|measured?|observation|transport|arpes|stm|sample)\b",
@@ -417,6 +439,7 @@ class DefaultPdfProcessor:
         return ""
 
     def _extract_dimensionality(self, lowered: str) -> str:
+        """Classify dimensionality into 2D, Bulk or unknown."""
         has_2d = bool(
             re.search(r"\b(2d|two-dimensional|monolayer|single-layer|thin film|ultrathin)\b", lowered)
         )
@@ -430,6 +453,7 @@ class DefaultPdfProcessor:
         return ""
 
     def _extract_materials(self, text: str) -> dict[str, int]:
+        """Extract formula-like material tokens with context validation."""
         materials: dict[str, int] = {}
         lowered = text.lower()
         for match in _MATERIAL_RE.findall(text):
@@ -448,6 +472,7 @@ class DefaultPdfProcessor:
         return materials
 
     def _extract_debye(self, text: str) -> list[float]:
+        """Extract Debye frequency-like numeric values."""
         values: list[float] = []
         for raw in _DEBYE_RE.findall(text):
             try:
@@ -458,6 +483,7 @@ class DefaultPdfProcessor:
 
 
 def manifest_text(element: ET.Element, tag: str) -> str:
+    """Return stripped child text for XML tag, or empty string."""
     child = element.find(tag)
     if child is None or child.text is None:
         return ""
@@ -465,6 +491,7 @@ def manifest_text(element: ET.Element, tag: str) -> str:
 
 
 def to_lookup_key(arxiv_id: str) -> tuple[str, str]:
+    """Normalize arXiv ID into `(yymm, comparable_key)` for manifest lookup."""
     raw = (arxiv_id or "").strip()
     if not raw:
         return "", ""
@@ -486,6 +513,7 @@ def to_lookup_key(arxiv_id: str) -> tuple[str, str]:
 
 
 def build_pdf_basename_candidates(arxiv_id: str) -> set[str]:
+    """Build acceptable basename variants used while scanning TAR members."""
     normalized = (arxiv_id or "").strip()
     base = normalized[6:] if normalized.lower().startswith("arxiv:") else normalized
     without_version = _ARXIV_VERSION_RE.sub("", base)
@@ -501,7 +529,7 @@ def build_pdf_basename_candidates(arxiv_id: str) -> set[str]:
 
 
 async def to_thread(func, *args, **kwargs):
+    """Run sync callable in thread pool and await result."""
     import asyncio
 
     return await asyncio.to_thread(func, *args, **kwargs)
-

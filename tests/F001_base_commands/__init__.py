@@ -1,4 +1,1 @@
-import pytest
-
-
-pytestmark = pytest.mark.skip(reason="Legacy users feature is disabled outside current PRD scope.")
+﻿"""Legacy users tests are deprecated and intentionally empty."""

@@ -21,6 +21,8 @@ from model.enums import PaperStatusEnum
 
 
 class PaperRepository:
+    """Persistence layer for paper entities and related artifacts."""
+
     def __init__(self):
         self.model = PaperModel
 
@@ -35,6 +37,7 @@ class PaperRepository:
         source: str,
         external_id: str,
     ) -> PaperModel | None:
+        """Return paper by unique `(source, external_id)` pair."""
         stmt = select(self.model).where(
             self.model.source == source,
             self.model.external_id == external_id,
@@ -48,6 +51,7 @@ class PaperRepository:
         source: str | None = None,
         limit: int = 500,
     ) -> list[PaperModel]:
+        """Return papers eligible for processing stage."""
         stmt = select(self.model).where(
             self.model.status.in_(
                 [
@@ -64,6 +68,7 @@ class PaperRepository:
         return list((await session.execute(stmt)).scalars().all())
 
     async def create_paper(self, session: AsyncSession, **kwargs) -> PaperModel:
+        """Create `paper` row and return persisted model."""
         paper = self.model(**kwargs)
         session.add(paper)
         await session.flush()
@@ -77,6 +82,7 @@ class PaperRepository:
         paper_id: int,
         full_text: str,
     ) -> PaperContentModel:
+        """Create `paper_content` row for a paper."""
         content = PaperContentModel(
             paper_id=paper_id,
             full_text=self._sanitize_text(full_text),
@@ -97,6 +103,7 @@ class PaperRepository:
         size_bytes: int | None,
         checksum: str | None,
     ) -> PaperFileModel:
+        """Create `paper_file` artifact row."""
         paper_file = PaperFileModel(
             paper_id=paper_id,
             file_type=file_type,
@@ -117,6 +124,7 @@ class PaperRepository:
         paper_id: int,
         source_meta: dict[str, Any],
     ) -> PaperSourceMetaModel:
+        """Create `paper_source_meta` row."""
         source_meta_model = PaperSourceMetaModel(
             paper_id=paper_id,
             source_meta=source_meta,
@@ -133,6 +141,7 @@ class PaperRepository:
         paper_id: int,
         source_meta: dict[str, Any],
     ) -> PaperSourceMetaModel:
+        """Insert or update source metadata for a paper."""
         stmt = select(PaperSourceMetaModel).where(PaperSourceMetaModel.paper_id == paper_id)
         existing = (await session.execute(stmt)).scalar_one_or_none()
         if existing is None:
@@ -155,6 +164,7 @@ class PaperRepository:
         paper_id: int,
         full_text: str,
     ) -> PaperContentModel:
+        """Insert or update extracted full text for a paper."""
         sanitized_text = self._sanitize_text(full_text)
         stmt = select(PaperContentModel).where(PaperContentModel.paper_id == paper_id)
         existing = (await session.execute(stmt)).scalar_one_or_none()
@@ -182,6 +192,7 @@ class PaperRepository:
         size_bytes: int | None,
         checksum: str | None,
     ) -> PaperFileModel:
+        """Insert or update artifact file metadata by `(paper_id, file_type)`."""
         stmt = select(PaperFileModel).where(
             PaperFileModel.paper_id == paper_id,
             PaperFileModel.file_type == file_type,
@@ -217,6 +228,7 @@ class PaperRepository:
         increment_attempts: bool = False,
         payload: dict[str, Any] | None = None,
     ) -> PaperModel:
+        """Update processing status and optional payload/error metadata."""
         paper.status = status
         paper.last_error = self._sanitize_text(last_error) if last_error else None
         if increment_attempts:
@@ -241,6 +253,7 @@ class PaperRepository:
         paper_type: str | None,
         dimensionality: str | None,
     ):
+        """Apply API filter set to selectable statement."""
         if source:
             stmt = stmt.where(self.model.source == source)
 
@@ -281,6 +294,7 @@ class PaperRepository:
         offset: int,
         limit: int,
     ) -> tuple[list[PaperModel], int]:
+        """Return filtered page of papers and total count."""
         base_stmt = select(self.model)
         base_stmt = self._apply_filters(
             base_stmt,
@@ -302,10 +316,12 @@ class PaperRepository:
         return items, total
 
     async def get_by_id(self, session: AsyncSession, paper_id: int) -> PaperModel | None:
+        """Return paper by internal ID."""
         stmt = select(self.model).where(self.model.id == paper_id)
         return (await session.execute(stmt)).scalar_one_or_none()
 
     async def get_source_meta(self, session: AsyncSession, paper_id: int) -> dict[str, Any]:
+        """Return paper source metadata as plain dict."""
         stmt = select(PaperSourceMetaModel).where(PaperSourceMetaModel.paper_id == paper_id)
         row = (await session.execute(stmt)).scalar_one_or_none()
         if row is None or row.source_meta is None:
@@ -313,6 +329,7 @@ class PaperRepository:
         return dict(row.source_meta)
 
     async def get_content(self, session: AsyncSession, paper_id: int) -> PaperContentModel | None:
+        """Return extracted content row by paper ID."""
         stmt = select(PaperContentModel).where(PaperContentModel.paper_id == paper_id)
         return (await session.execute(stmt)).scalar_one_or_none()
 
@@ -320,6 +337,7 @@ class PaperRepository:
         self,
         session: AsyncSession,
     ) -> tuple[int, list[tuple[str, int]], list[tuple[str, int]], list[tuple[str, int]], list[tuple[str, int]]]:
+        """Build aggregate counters for stats endpoint."""
         total_count = int((await session.execute(select(func.count()).select_from(self.model))).scalar_one())
 
         by_source_stmt = (

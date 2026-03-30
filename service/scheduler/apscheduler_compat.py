@@ -20,9 +20,13 @@ except Exception:
     APSCHEDULER_AVAILABLE = False
 
     class JobLookupError(Exception):
+        """Fallback APScheduler-compatible lookup exception."""
+
         pass
 
     class CronTrigger:
+        """Minimal cron trigger validator used in fallback mode."""
+
         def __init__(self, expression: str):
             self.expression = expression
 
@@ -48,6 +52,8 @@ except Exception:
         next_run_time: datetime | None = None
 
     class AsyncIOScheduler:
+        """In-memory scheduler fallback for environments without APScheduler."""
+
         def __init__(self, timezone: str = "UTC"):
             self.timezone = timezone
             self._started = False

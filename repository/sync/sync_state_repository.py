@@ -17,6 +17,8 @@ from model.sync.sync_state_model import SyncStateModel
 
 
 class SyncStateRepository:
+    """Persistence operations for incremental sync state snapshots."""
+
     def __init__(self):
         self.model = SyncStateModel
 
@@ -26,6 +28,7 @@ class SyncStateRepository:
         *,
         source: str,
     ) -> SyncStateModel | None:
+        """Return sync state row by source key."""
         stmt = select(self.model).where(self.model.source == source)
         return (await session.execute(stmt)).scalar_one_or_none()
 
@@ -35,6 +38,7 @@ class SyncStateRepository:
         *,
         source: str,
     ) -> SyncStateModel:
+        """Return source state or create initial OK state."""
         state = await self.get_by_source(session, source=source)
         if state is not None:
             return state
@@ -46,6 +50,7 @@ class SyncStateRepository:
         return state
 
     async def save(self, session: AsyncSession, state: SyncStateModel) -> SyncStateModel:
+        """Persist sync state row."""
         session.add(state)
         await session.flush()
         await session.refresh(state)
@@ -59,6 +64,7 @@ class SyncStateRepository:
         started_at: datetime,
         note: str | None,
     ) -> SyncStateModel:
+        """Mark sync pipeline as running."""
         state.last_status = SyncStatusEnum.RUNNING.value
         state.last_error = None
         state.last_run_started_at = started_at
@@ -76,6 +82,7 @@ class SyncStateRepository:
         checkpoint_datestamp: date | None,
         note: str | None,
     ) -> SyncStateModel:
+        """Persist successful sync run metrics."""
         state.last_status = SyncStatusEnum.OK.value
         state.last_error = None
         state.last_run_finished_at = finished_at
@@ -96,10 +103,10 @@ class SyncStateRepository:
         error_text: str,
         note: str | None,
     ) -> SyncStateModel:
+        """Persist failed sync run status and error details."""
         state.last_status = SyncStatusEnum.ERROR.value
         state.last_error = error_text[:8000]
         state.last_run_finished_at = finished_at
         state.last_rows = 0
         state.note = note
         return await self.save(session, state)
-

@@ -1,9 +1,3 @@
-"""Pydantic-схемы сущности User."""
+﻿"""Users schemas were removed from active PRD scope."""
 
-from schema.user.user_schema import (
-    UserCreateSchema,
-    UserResponseSchema,
-    UserGetOrCreateResponseSchema,
-)
-
-__all__ = ["UserCreateSchema", "UserResponseSchema", "UserGetOrCreateResponseSchema"]
+__all__: list[str] = []

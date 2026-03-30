@@ -38,6 +38,16 @@ logger = logging.getLogger(__name__)
 
 
 class SyncPipelineService:
+    """
+    Full synchronization orchestrator for feature F001.
+
+    Pipeline stages:
+    1. Metadata sync via OAI-PMH.
+    2. PDF fetch (S3 TAR or HTTP fallback).
+    3. PDF to text + payload extraction.
+    4. Status bookkeeping in sync_state and paper tables.
+    """
+
     SOURCE_NAME = "arxiv"
     SYNC_STATE_SOURCE_KEY = "arxiv:oai_suprcon_sync"
     PROGRESS_LOG_EVERY = 10
@@ -61,6 +71,7 @@ class SyncPipelineService:
         self._overlap_days = int(configs.SYNC_OVERLAP_DAYS)
 
     async def run_once(self, session: AsyncSession) -> FullSyncResult:
+        """Run metadata + processing stages in one transaction scope."""
         logger.info(
             "Sync run started source_key=%s overlap_days=%s batch_size=%s",
             self.SYNC_STATE_SOURCE_KEY,
@@ -127,6 +138,7 @@ class SyncPipelineService:
             raise
 
     async def run_sync_metadata(self, session: AsyncSession) -> MetadataSyncResult:
+        """Run only metadata synchronization stage."""
         state = await self._sync_state_repo.get_or_create(
             session,
             source=self.SYNC_STATE_SOURCE_KEY,
@@ -160,6 +172,7 @@ class SyncPipelineService:
             raise
 
     async def run_download_and_process(self, session: AsyncSession) -> ProcessingResult:
+        """Process queued papers: download PDF, parse text, persist payload."""
         papers = await self._paper_repo.list_processable_papers(
             session,
             source=self.SOURCE_NAME,
@@ -330,6 +343,7 @@ class SyncPipelineService:
         session: AsyncSession,
         state,
     ) -> MetadataSyncResult:
+        """Fetch OAI records and insert new target papers."""
         from_date = None
         if state.last_success_datestamp is not None:
             from_date = state.last_success_datestamp - timedelta(days=self._overlap_days)
@@ -388,6 +402,7 @@ class SyncPipelineService:
         )
 
     def _is_target_record(self, record: OaiPaperRecord) -> bool:
+        """Check whether OAI record belongs to cond-mat.supr-con subset."""
         categories = [token.strip().lower() for token in (record.categories or "").split() if token.strip()]
         return "cond-mat.supr-con" in categories
 
@@ -399,6 +414,7 @@ class SyncPipelineService:
         extension: str,
         filename_hint: str,
     ) -> tuple[str, int, str]:
+        """Save binary artifact and return `(path, size_bytes, sha256)` tuple."""
         storage_dir = Path(configs.STORAGE_PATH) / "papers" / str(paper_id)
         storage_dir.mkdir(parents=True, exist_ok=True)
 

@@ -1,5 +1,3 @@
-"""Users router."""
+﻿"""Users endpoints were removed from active PRD scope."""
 
-from .post import router
-
-__all__ = ["router"]
+__all__: list[str] = []

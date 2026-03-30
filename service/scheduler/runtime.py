@@ -18,6 +18,8 @@ SchedulerCallable = Callable[[], Awaitable[None] | None]
 
 
 class SchedulerRuntime:
+    """Thin wrapper around APScheduler runtime and in-process run lock."""
+
     JOB_ID = "sync_pipeline_job"
 
     def __init__(self):
@@ -28,6 +30,7 @@ class SchedulerRuntime:
         self._run_lock = asyncio.Lock()
 
     def ensure_started(self) -> None:
+        """Start scheduler once (idempotent)."""
         if self._is_started:
             return
 
@@ -35,6 +38,7 @@ class SchedulerRuntime:
         self._is_started = True
 
     def shutdown(self) -> None:
+        """Stop scheduler and reset runtime flags."""
         if not self._is_started:
             return
 
@@ -49,6 +53,7 @@ class SchedulerRuntime:
         is_active: bool,
         callback: SchedulerCallable,
     ) -> None:
+        """Create or update scheduled job and active state."""
         self.ensure_started()
         self._job_callable = callback
         trigger = CronTrigger.from_crontab(cron_expression)
@@ -74,9 +79,11 @@ class SchedulerRuntime:
         self._is_configured = True
 
     def is_configured(self) -> bool:
+        """Return whether runtime already has configured job parameters."""
         return self._is_configured
 
     def pause(self) -> None:
+        """Pause scheduled job if present."""
         self.ensure_started()
         try:
             self._scheduler.pause_job(self.JOB_ID)
@@ -84,6 +91,7 @@ class SchedulerRuntime:
             return
 
     def resume(self) -> None:
+        """Resume scheduled job if present."""
         self.ensure_started()
         try:
             self._scheduler.resume_job(self.JOB_ID)
@@ -91,6 +99,7 @@ class SchedulerRuntime:
             return
 
     def get_next_run_at(self) -> datetime | None:
+        """Return scheduler-computed next run timestamp, if available."""
         if not self._is_started:
             return None
 
@@ -101,6 +110,7 @@ class SchedulerRuntime:
         return job.next_run_time
 
     async def acquire_run_lock(self) -> bool:
+        """Acquire single-run lock. Returns False when lock already held."""
         if self._run_lock.locked():
             return False
 
@@ -108,10 +118,12 @@ class SchedulerRuntime:
         return True
 
     def release_run_lock(self) -> None:
+        """Release single-run lock when currently acquired."""
         if self._run_lock.locked():
             self._run_lock.release()
 
     async def _run_callback(self) -> None:
+        """Execute configured callback and await if it is coroutine-like."""
         if self._job_callable is None:
             return
 

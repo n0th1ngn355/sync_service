@@ -21,4 +21,5 @@ async def update_schedule(
     body: SchedulerScheduleUpdateSchema,
     session: AsyncSession = Depends(db_connect.get_session),
 ) -> SchedulerStatusResponseSchema:
+    """Update scheduler cron via explicit expression or preset alias."""
     return await scheduler_service.update_schedule(session, body)

@@ -22,7 +22,6 @@ from .scheduler.scheduler_schema import (
     SchedulerScheduleUpdateSchema,
     SchedulerStatusResponseSchema,
 )
-from .user.user_schema import UserCreateSchema, UserGetOrCreateResponseSchema, UserResponseSchema
 
 __all__ = [
     "HealthCheckResponseSchema",
@@ -39,7 +38,4 @@ __all__ = [
     "SchedulerStatusResponseSchema",
     "SchedulerScheduleUpdateSchema",
     "SchedulerRunResponseSchema",
-    "UserCreateSchema",
-    "UserResponseSchema",
-    "UserGetOrCreateResponseSchema",
 ]

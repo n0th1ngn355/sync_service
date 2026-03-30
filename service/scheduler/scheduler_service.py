@@ -33,6 +33,15 @@ logger = logging.getLogger(__name__)
 
 
 class SchedulerService:
+    """
+    Scheduler management service for feature F002.
+
+    Responsibilities:
+    - expose scheduler status and configuration updates
+    - trigger manual runs and guard from concurrent execution
+    - bridge APScheduler ticks to sync pipeline execution
+    """
+
     PRESET_TO_CRON = {
         "hourly": "0 * * * *",
         "daily": "0 3 * * *",
@@ -48,6 +57,7 @@ class SchedulerService:
         self._runtime = runtime or scheduler_runtime
 
     async def get_status(self, session: AsyncSession) -> SchedulerStatusResponseSchema:
+        """Return persisted scheduler config and runtime next run timestamp."""
         config = await self._ensure_config(session)
         if not self._runtime.is_configured():
             self._runtime.configure_job(
@@ -58,6 +68,7 @@ class SchedulerService:
         return self._build_status_response(config)
 
     async def bootstrap(self) -> None:
+        """Initialize scheduler runtime on application startup."""
         try:
             async with self._session_scope() as session:
                 config = await self._ensure_config(session)
@@ -81,6 +92,7 @@ class SchedulerService:
         session: AsyncSession,
         body: SchedulerScheduleUpdateSchema,
     ) -> SchedulerStatusResponseSchema:
+        """Update cron expression in DB and apply it to runtime scheduler."""
         config = await self._ensure_config(session)
         cron_expression = self._resolve_cron_expression(body)
         self._validate_cron_expression(cron_expression)
@@ -96,6 +108,7 @@ class SchedulerService:
         return self._build_status_response(config)
 
     async def run_now(self, session: AsyncSession) -> SchedulerRunResponseSchema:
+        """Start one manual background run if no run is currently active."""
         config = await self._ensure_config(session)
         self._runtime.configure_job(
             cron_expression=config.cron_expression,
@@ -125,6 +138,7 @@ class SchedulerService:
         )
 
     async def pause(self, session: AsyncSession) -> SchedulerStatusResponseSchema:
+        """Disable periodic ticks while keeping scheduler configuration."""
         config = await self._ensure_config(session)
         config.is_active = False
         config = await self._repo.save(session, config)
@@ -136,6 +150,7 @@ class SchedulerService:
         return self._build_status_response(config)
 
     async def resume(self, session: AsyncSession) -> SchedulerStatusResponseSchema:
+        """Re-enable periodic ticks with previously configured cron."""
         config = await self._ensure_config(session)
         config.is_active = True
         config = await self._repo.save(session, config)
@@ -147,9 +162,11 @@ class SchedulerService:
         return self._build_status_response(config)
 
     def shutdown(self) -> None:
+        """Stop scheduler runtime on application shutdown."""
         self._runtime.shutdown()
 
     async def _run_from_scheduler(self) -> None:
+        """Internal callback used by APScheduler ticks."""
         acquired = await self._runtime.acquire_run_lock()
         if not acquired:
             logger.info("Scheduled tick skipped: run is already in progress")
@@ -169,6 +186,7 @@ class SchedulerService:
         await self._run_pipeline(run_id)
 
     async def _run_pipeline(self, run_id: str) -> None:
+        """Execute full sync pipeline and persist scheduler run outcome."""
         status = SchedulerStatusEnum.OK
         note = f"run_id={run_id}; status=OK"
         logger.info("Pipeline execution started run_id=%s", run_id)
@@ -205,6 +223,7 @@ class SchedulerService:
                 logger.info("Pipeline execution finalized run_id=%s status=%s", run_id, status.value)
 
     async def _ensure_config(self, session: AsyncSession) -> SchedulerConfigModel:
+        """Fetch scheduler config row or create defaults from environment."""
         config = await self._repo.get_or_create(
             session,
             job_name=configs.SCHEDULER_JOB_NAME,
@@ -214,6 +233,7 @@ class SchedulerService:
         return config
 
     def _resolve_cron_expression(self, body: SchedulerScheduleUpdateSchema) -> str:
+        """Resolve final cron from explicit expression or preset alias."""
         if body.cron_expression:
             return body.cron_expression
         if body.preset:
@@ -221,6 +241,7 @@ class SchedulerService:
         raise ValidationError("Either cron_expression or preset is required")
 
     def _validate_cron_expression(self, cron_expression: str) -> None:
+        """Validate cron format before persisting and applying schedule."""
         try:
             CronTrigger.from_crontab(cron_expression)
         except ValueError as exc:
@@ -230,6 +251,7 @@ class SchedulerService:
         self,
         config: SchedulerConfigModel,
     ) -> SchedulerStatusResponseSchema:
+        """Map repository model + runtime state to API response schema."""
         return SchedulerStatusResponseSchema(
             job_name=config.job_name,
             cron_expression=config.cron_expression,
@@ -241,6 +263,7 @@ class SchedulerService:
 
     @asynccontextmanager
     async def _session_scope(self):
+        """Provide standalone transactional DB session for background tasks."""
         db_connect._ensure_initialized()
         async with db_connect.async_session() as session:
             try:

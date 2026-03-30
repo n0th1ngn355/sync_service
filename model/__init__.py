@@ -13,7 +13,6 @@ from .paper.paper_file_model import PaperFileModel
 from .paper.paper_source_meta_model import PaperSourceMetaModel
 from .sync.scheduler_config_model import SchedulerConfigModel
 from .sync.sync_state_model import SyncStateModel
-from .user.user_model import UserModel
 
 __all__ = [
     "Base",
@@ -28,5 +27,4 @@ __all__ = [
     "PaperSourceMetaModel",
     "SchedulerConfigModel",
     "SyncStateModel",
-    "UserModel",
 ]

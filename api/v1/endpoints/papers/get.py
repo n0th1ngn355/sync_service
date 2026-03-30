@@ -35,6 +35,11 @@ async def get_papers(
     limit: int = Query(default=50, ge=1, le=200),
     session: AsyncSession = Depends(db_connect.get_session),
 ) -> PaperListResponseSchema:
+    """
+    List papers with filters and pagination.
+
+    Supported filters map to payload/source/status fields required by PRD F003.
+    """
     return await service.get_papers(
         session,
         source=source,
@@ -53,6 +58,7 @@ async def get_papers(
 async def get_papers_stats(
     session: AsyncSession = Depends(db_connect.get_session),
 ) -> PaperStatsResponseSchema:
+    """Return aggregate statistics for stored papers."""
     return await service.get_stats(session)
 
 
@@ -61,6 +67,7 @@ async def get_paper_by_id(
     paper_id: int,
     session: AsyncSession = Depends(db_connect.get_session),
 ) -> PaperDetailResponseSchema:
+    """Return detailed metadata for one paper by internal ID."""
     return await service.get_paper_by_id(session, paper_id)
 
 
@@ -69,4 +76,5 @@ async def get_paper_content(
     paper_id: int,
     session: AsyncSession = Depends(db_connect.get_session),
 ) -> PaperContentResponseSchema:
+    """Return extracted full text for one paper."""
     return await service.get_paper_content(session, paper_id)
